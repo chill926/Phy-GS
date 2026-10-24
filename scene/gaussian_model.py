@@ -23,6 +23,10 @@ from utils.general_utils import strip_symmetric, build_scaling_rotation
 
 
 class GaussianModel:
+    _probe_optional_tensor_fields = (
+        "material_ids", "cluster_eps0", "cluster_k", "cluster_counts",
+        "emissivity_ref", "emissivity_slope",
+    )
     def __init__(self, sh_degree: int, device):
 
         def build_covariance_from_scaling_rotation(scaling, scaling_modifier, rotation):
@@ -59,6 +63,9 @@ class GaussianModel:
         self._phys_delta = torch.empty(0)
         self._phys_rest_ratio = torch.empty(0)
         self._phys_rgb_dc = torch.empty(0)
+        self._phys_probe_metadata = {}
+        for name in self._probe_optional_tensor_fields:
+            setattr(self, "_phys_" + name, torch.empty(0))
 
         self.optimizer = None
 
@@ -326,6 +333,9 @@ class GaussianModel:
         self._phys_delta = torch.empty(0, device=device)
         self._phys_rest_ratio = torch.empty(0, device=device)
         self._phys_rgb_dc = torch.empty(0, device=device)
+        self._phys_probe_metadata = {}
+        for name in self._probe_optional_tensor_fields:
+            setattr(self, "_phys_" + name, torch.empty(0, device=device))
 
     def clear_radiative_transfer_attributes(self):
         self.clear_physical_probe()
@@ -357,6 +367,11 @@ class GaussianModel:
             "rest_ratio": self._phys_rest_ratio.detach().cpu(),
             "rgb_dc": self._phys_rgb_dc.detach().cpu(),
         }
+        state["probe_metadata"] = dict(self._phys_probe_metadata)
+        for name in self._probe_optional_tensor_fields:
+            value = getattr(self, "_phys_" + name)
+            if torch.is_tensor(value) and value.numel():
+                state[name] = value.detach().cpu()
         torch.save(state, path)
         return True
 
@@ -383,6 +398,10 @@ class GaussianModel:
             value = state.get(name, torch.empty(0, device=device))
             if torch.is_tensor(value):
                 setattr(self, f"_phys_{name}", value.to(device))
+        self._phys_probe_metadata = dict(state.get("probe_metadata", {}))
+        for name in self._probe_optional_tensor_fields:
+            value = state.get(name, torch.empty(0, device=device))
+            setattr(self, "_phys_" + name, value.to(device))
         if not self.has_physical_probe():
             self.clear_physical_probe()
             return False

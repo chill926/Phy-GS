@@ -1,3 +1,5 @@
+from utils.emissivity_models import (linear_emissivity_settings, linear_emissivity, probe_model_metadata,
+                                     learnable_emissivity_settings, endpoint_emissivity_parameters)
 import json
 import math
 import os
@@ -460,7 +462,7 @@ def _local_smooth_pairs(xyz: torch.Tensor, sample_count: int, device) -> Tuple[t
     return pair_i, pair_j, weights
 
 
-def fit_material_decoupled_rt_attributes(extracted: Dict[str, torch.Tensor], gaussians, opt, device,
+def _fit_material_constant_rt_attributes(extracted: Dict[str, torch.Tensor], gaussians, opt, device,
                                          lut: PlanckLUT) -> Dict[str, torch.Tensor]:
     """Fit single-band RT attributes with 3DGS material and geometry priors.
 
@@ -568,6 +570,175 @@ def fit_material_decoupled_rt_attributes(extracted: Dict[str, torch.Tensor], gau
         "cluster_emissivity": e_cluster[:, None],
         "cluster_counts": cluster_counts[:, None],
     }
+
+def _fit_linear_emissivity_rt_attributes(extracted: Dict[str, torch.Tensor], gaussians, opt, device,
+                                         lut: PlanckLUT) -> Dict[str, torch.Tensor]:
+    """Fit the fixed-slope control or bounded per-material learnable slopes.
+
+    Learned slopes are effective coefficients conditioned on the supplied priors;
+    single-band image fitting does not identify unique material properties.
+    """
+    q = torch.clamp(extracted["q_target"].detach().reshape(-1), 1e-4, 1.0 - 1e-4)
+    n = q.numel()
+    if n == 0:
+        return fit_rt_attributes(extracted["q_target"], opt, device, lut)
+
+    learn_slope = getattr(opt, "phys_probe_mode", "original") == "learnable_linear_emissivity"
+    settings = learnable_emissivity_settings(opt) if learn_slope else linear_emissivity_settings(opt)
+    eps0_min, eps0_max = settings["eps0_min"], settings["eps0_max"]
+    prior_weight = float(getattr(opt, "phys_decouple_lambda_e_prior", opt.phys_probe_lambda_e_prior))
+    if not math.isfinite(prior_weight) or prior_weight <= 0.0:
+        raise ValueError("linear_emissivity requires a positive emissivity prior weight")
+    features = _material_features(gaussians, extracted, opt)
+    num_clusters = int(getattr(opt, "phys_decouple_clusters", 16))
+    cluster_samples = int(getattr(opt, "phys_decouple_cluster_samples", 50000))
+    cluster_iters = int(getattr(opt, "phys_decouple_cluster_iters", 20))
+    material_ids = _assign_kmeans(features, num_clusters, cluster_samples, cluster_iters)
+    k = int(material_ids.max().item()) + 1
+
+    ambient_init = torch.quantile(q, opt.phys_probe_ambient_quantile).item()
+    ambient_init = max(min(ambient_init, 0.95), 1e-4)
+    e_frac = (opt.phys_probe_e_init - eps0_min) / (eps0_max - eps0_min)
+    e_frac = max(min(float(e_frac), 1.0 - 1e-4), 1e-4)
+
+    u_raw = torch.logit(q).detach().clone().requires_grad_(True)
+    e_raw = torch.full((k,), math.log(e_frac / (1.0 - e_frac)), device=device, dtype=torch.float32, requires_grad=True)
+    a_raw = torch.tensor(math.log(ambient_init / (1.0 - ambient_init)), device=device, dtype=torch.float32, requires_grad=True)
+    delta_raw = torch.zeros((n,), device=device, dtype=torch.float32, requires_grad=True)
+
+    if learn_slope:
+        # The endpoint logits are equivalent to two independently bounded values,
+        # but center/difference coordinates let us freeze only the slope.
+        ends = torch.tensor([opt.phys_probe_e_init + settings["slope_per_K"] *
+                             (t-settings["temperature_ref_K"])
+                             for t in (opt.phys_probe_temp_min, opt.phys_probe_temp_max)], device=device)
+        end_logits = torch.logit(((ends-settings["emissivity_min"]) /
+                                  (settings["emissivity_max"]-settings["emissivity_min"])).clamp(1e-4, 1.0-1e-4))
+        e_raw = end_logits.mean().expand(k).clone().detach().requires_grad_(True)
+        difference_raw = (end_logits[1]-end_logits[0]).expand(k).clone().detach().requires_grad_(True)
+
+    smooth_samples = int(getattr(opt, "phys_decouple_smooth_samples", 60000))
+    pair_i, pair_j, pair_w = _local_smooth_pairs(gaussians.get_xyz.detach(), smooth_samples, device)
+
+    lr = float(getattr(opt, "phys_decouple_lr", opt.phys_probe_lr))
+    steps = int(getattr(opt, "phys_decouple_steps", opt.phys_probe_steps))
+    delta_max = float(getattr(opt, "phys_decouple_delta_max", opt.phys_probe_delta_max))
+    temp_smooth_weight = float(getattr(opt, "phys_decouple_lambda_temp_smooth", 0.05))
+    e_prior_weight = float(getattr(opt, "phys_decouple_lambda_e_prior", opt.phys_probe_lambda_e_prior))
+    a_prior_weight = float(getattr(opt, "phys_decouple_lambda_a_prior", opt.phys_probe_lambda_a_prior))
+    delta_weight = float(getattr(opt, "phys_decouple_lambda_delta", opt.phys_probe_lambda_delta))
+    groups = [{"params": [u_raw, e_raw, a_raw, delta_raw]}]
+    if learn_slope:
+        groups.append({"params": [difference_raw], "lr": lr*settings["slope_lr_scale"]})
+    optimizer = torch.optim.Adam(groups, lr=lr)
+    warmup_steps = int(max(steps, 1)*settings["slope_warmup_fraction"]) if learn_slope else 0
+
+    def material_parameters(freeze_slope=False):
+        if learn_slope:
+            eps0, slopes, _, _ = endpoint_emissivity_parameters(e_raw, difference_raw, settings, freeze_slope)
+            return eps0, slopes
+        eps0 = eps0_min + (eps0_max-eps0_min)*torch.sigmoid(e_raw)
+        return eps0, torch.full_like(eps0, settings["slope_per_K"])
+
+    e_init = torch.full((k,), opt.phys_probe_e_init, device=device)
+    a_init = torch.tensor(ambient_init, device=device)
+    temp_span = max(float(opt.phys_probe_temp_max - opt.phys_probe_temp_min), 1e-6)
+
+    for step in range(max(steps, 1)):
+        u = torch.sigmoid(u_raw)
+        temp = lut.norm_radiance_to_temp(u)
+        e_cluster, slope_cluster = material_parameters(freeze_slope=step < warmup_steps)
+        if learn_slope:
+            e = e_cluster[material_ids] + slope_cluster[material_ids]*(temp-settings["temperature_ref_K"])
+        else:
+            e = linear_emissivity(e_cluster, temp, material_ids, settings)
+        a = torch.sigmoid(a_raw)
+        delta = delta_max * torch.tanh(delta_raw)
+        q_phys = e * u + (1.0 - e) * a + delta
+
+        fit = F.smooth_l1_loss(q_phys, q, beta=opt.phys_probe_huber_beta)
+        e_prior = F.smooth_l1_loss(e_cluster, e_init, beta=opt.phys_probe_huber_beta)
+        a_prior = F.smooth_l1_loss(a, a_init, beta=opt.phys_probe_huber_beta)
+        delta_reg = delta.abs().mean()
+        # Dimensionless regularization: k*temperature_span / emissivity_span.
+        # This has the same meaning when the fitted temperature interval changes.
+        slope_reg = ((slope_cluster*temp_span /
+                      (settings["emissivity_max"]-settings["emissivity_min"])).square().mean()
+                     if learn_slope else q.new_tensor(0.0))
+
+        if pair_i.numel() > 0 and temp_smooth_weight > 0.0:
+            temp_unit = (temp - float(opt.phys_probe_temp_min)) / temp_span
+            temp_diff = F.smooth_l1_loss(
+                temp_unit[pair_i],
+                temp_unit[pair_j],
+                beta=float(getattr(opt, "phys_decouple_temp_smooth_beta", 0.02)),
+                reduction="none",
+            )
+            temp_smooth = (pair_w * temp_diff).sum() / pair_w.sum().clamp_min(1e-6)
+        else:
+            temp_smooth = q.new_tensor(0.0)
+
+        loss = (
+            fit
+            + e_prior_weight * e_prior
+            + a_prior_weight * a_prior
+            + delta_weight * delta_reg
+            + temp_smooth_weight * temp_smooth
+            + (settings["slope_regularization_weight"]*slope_reg if learn_slope else 0.0)
+        )
+
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        optimizer.step()
+
+    with torch.no_grad():
+        u = torch.sigmoid(u_raw)
+        temp = lut.norm_radiance_to_temp(u)
+        e_cluster, slope_cluster = material_parameters()
+        if learn_slope:
+            e = e_cluster[material_ids] + slope_cluster[material_ids]*(temp-settings["temperature_ref_K"])
+        else:
+            e = linear_emissivity(e_cluster, temp, material_ids, settings)
+        a = torch.sigmoid(a_raw)
+        delta = delta_max * torch.tanh(delta_raw)
+        q_phys = e * u + (1.0 - e) * a + delta
+        temp = lut.norm_radiance_to_temp(u)
+
+    cluster_counts = torch.bincount(material_ids, minlength=k).float()
+    return {
+        "emission": u[:, None],
+        "emissivity": e[:, None],
+        "ambient": torch.full((n, 1), float(a.detach().item()), device=device),
+        "delta": delta[:, None],
+        "q_phys": q_phys[:, None],
+        "temperature": temp[:, None],
+        "fit_abs_err": (q_phys - q).abs()[:, None],
+        "fit_sq_err": (q_phys - q).square()[:, None],
+        "ambient_init": torch.full((n, 1), ambient_init, device=device),
+        "material_ids": material_ids[:, None],
+        "cluster_emissivity": e_cluster[:, None],
+        "cluster_counts": cluster_counts[:, None],
+        "cluster_eps0": e_cluster[:, None],
+        "cluster_k": slope_cluster[:, None],
+        "emissivity_ref": e_cluster[material_ids, None],
+        "emissivity_slope": slope_cluster[material_ids, None],
+    }
+
+
+def fit_material_decoupled_rt_attributes(extracted, gaussians, opt, device, lut):
+    """Dispatch without changing the original mode's numerical implementation."""
+    metadata = probe_model_metadata(opt)
+    if metadata["mode"] in ("linear_emissivity", "learnable_linear_emissivity"):
+        fit = _fit_linear_emissivity_rt_attributes(extracted, gaussians, opt, device, lut)
+    else:
+        fit = _fit_material_constant_rt_attributes(extracted, gaussians, opt, device, lut)
+        if "cluster_emissivity" in fit:
+            fit["cluster_eps0"] = fit["cluster_emissivity"]
+            fit["cluster_k"] = torch.zeros_like(fit["cluster_emissivity"])
+            fit["emissivity_ref"] = fit["emissivity"]
+            fit["emissivity_slope"] = torch.zeros_like(fit["emissivity"])
+    fit["probe_metadata"] = metadata
+    return fit
 
 
 def _add_prefixed(summary: Dict[str, float], prefix: str, stats: Dict[str, float]) -> None:
@@ -678,7 +849,26 @@ def append_physir_summary(log_path: str, summary: Dict[str, float]) -> None:
 
 
 def _attach_material_fit_summary(summary: Dict[str, float], fit: Dict[str, torch.Tensor]) -> None:
-    summary["fit_method"] = "material_cluster_emissivity_temperature_smooth"
+    metadata = fit.get("probe_metadata", {})
+    summary["probe_mode"] = metadata.get("mode", "original")
+    summary["fit_method"] = ("material_cluster_emissivity_temperature_smooth"
+                             if summary["probe_mode"] == "original"
+                             else "material_cluster_linear_emissivity_temperature_smooth")
+    summary["emissivity_slope_per_K"] = metadata.get("slope_per_K", 0.0)
+    summary["temperature_ref_K"] = metadata.get("temperature_ref_K", 300.0)
+    summary["emissivity_min_over_T_range"] = float(fit["emissivity"].min())
+    if "cluster_eps0" in fit:
+        ref = metadata.get("temperature_ref_K", 300.0)
+        slope = fit.get("cluster_k", torch.zeros_like(fit["cluster_eps0"]))
+        endpoints = torch.cat([fit["cluster_eps0"] + slope * (metadata[t] - ref)
+                               for t in ("temperature_min_K", "temperature_max_K")])
+        summary["emissivity_min_over_T_range"] = float(endpoints.min())
+        summary["emissivity_max_over_T_range"] = float(endpoints.max())
+    if "cluster_k" in fit:
+        _add_prefixed(summary, "cluster_slope_per_K", tensor_stats(fit["cluster_k"]))
+        summary["slope_parameterization"] = metadata.get("slope_parameterization", "zero")
+        summary["slope_regularization_weight"] = metadata.get("slope_regularization_weight", 0.0)
+        summary["slope_warmup_fraction"] = metadata.get("slope_warmup_fraction", 0.0)
     if "cluster_emissivity" not in fit:
         return
     e_cluster = fit["cluster_emissivity"]
@@ -721,11 +911,17 @@ def fit_and_log_physir_attributes(iteration: int, gaussians, scene, opt, model_p
         delta=fit["delta"],
         rest_ratio=extracted["rest_ratio"],
         rgb_dc=extracted["rgb_dc"],
+        **{name: fit[name] for name in (
+            "probe_metadata", "material_ids", "cluster_eps0", "cluster_k", "cluster_counts",
+            "emissivity_ref", "emissivity_slope") if name in fit},
     )
 
     summary = gather_rt_summary(iteration, prev_point_count, gaussians, extracted, fit, opt)
     _attach_material_fit_summary(summary, fit)
-    text = summary_to_text(iteration, summary)
+    text = summary_to_text(iteration, summary) + " | mode=" + summary["probe_mode"]
+    if summary["probe_mode"] == "learnable_linear_emissivity":
+        text += " | k/K min {:.6g} mean {:.6g} max {:.6g}".format(
+            summary["cluster_slope_per_K_min"], summary["cluster_slope_per_K_mean"], summary["cluster_slope_per_K_max"])
     print(text + " | material fit")
     append_physir_summary(os.path.join(model_path, "phys_probe", "probe_log.jsonl"), summary)
     gaussians.save_radiative_transfer_attributes(os.path.join(model_path, "phys_probe", f"iteration_{iteration}", "phys_probe.pt"))

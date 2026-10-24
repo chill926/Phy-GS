@@ -217,6 +217,14 @@ class OptimizationParams(ParamGroup):
         self.densify_residual_weight_start_iter = 3000
         self.densify_residual_weight_blur = 1
         self.densify_residual_weight_split_only = False
+        # original keeps the existing material-constant Probe unchanged.
+        self.phys_probe_mode = "original"
+        self.phys_probe_temp_ref = 300.0
+        # Fixed slope in linear_emissivity; initial slope in learnable_linear_emissivity.
+        self.phys_probe_emissivity_slope = 0.0
+        self.phys_probe_lambda_slope = 0.001
+        self.phys_probe_slope_warmup_fraction = 0.25
+        self.phys_probe_slope_lr_scale = 0.25
         self.phys_probe_every = 1000
         self.phys_probe_steps = 128
         self.phys_probe_lr = 0.05

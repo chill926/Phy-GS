@@ -1,3 +1,18 @@
+# Phy-GS
+
+This repository contains research modifications to [PhysIR-Splat](https://github.com/JingyuanGao0919/physir-splat). The upstream Git history, license, and copyright notices are preserved.
+
+The additions include fixed-slope and learnable linear emissivity probes, probe map export, and FLIR display mapping tools. See the accompanying guides:
+
+- [Linear emissivity probes](thesis_scripts/README_linear_emissivity.md)
+- [Learnable emissivity probes](thesis_scripts/README_learnable_emissivity.md)
+- [Probe map export](thesis_scripts/README_probe_maps.md)
+- [DN supervision and FLIR display mapping](tools/README_DN_supervision.md)
+
+The original project documentation follows.
+
+---
+
 # PhysIR-Splat: Physically Consistent Thermal Infrared Radiative Transfer in 3D Gaussian Splatting
 
 This repository is organized around the CVPR 2026 paper **"PhysIR-Splat: Physically Consistent Thermal Infrared Radiative Transfer in 3D Gaussian Splatting"**.
