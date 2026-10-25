@@ -2,11 +2,14 @@
 
 This repository contains research modifications to [PhysIR-Splat](https://github.com/JingyuanGao0919/physir-splat). The upstream Git history, license, and copyright notices are preserved.
 
-The additions include fixed-slope and learnable linear emissivity probes, probe map export, and FLIR display mapping tools. See the accompanying guides:
+The additions include SAM3 open-vocabulary material segmentation, depth-aware material grouping, fixed-slope and learnable linear emissivity probes, probe map export, and FLIR display mapping tools. The default Probe learns the emissivity slope. Metal starts at 0.30 with bounds 0.20–0.40 over the fitted temperature interval; nonmetal and unknown regions retain the original 0.95 initial value and 0.85–0.99 bounds. Learning-rate schedules retain their existing settings.
+
+SAM3 runs offline in its own environment. Training reads the generated train-view masks without importing SAM3. Scene images, model weights, generated masks, and training outputs are excluded from Git; the material configuration and implementation are included. See the accompanying guides:
 
 - [Linear emissivity probes](thesis_scripts/README_linear_emissivity.md)
 - [Learnable emissivity probes](thesis_scripts/README_learnable_emissivity.md)
 - [Probe map export](thesis_scripts/README_probe_maps.md)
+- [SAM3 material segmentation and emissivity configuration](data/materials/README.md)
 - [DN supervision and FLIR display mapping](tools/README_DN_supervision.md)
 
 The original project documentation follows.

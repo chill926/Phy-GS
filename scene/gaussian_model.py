@@ -26,6 +26,7 @@ class GaussianModel:
     _probe_optional_tensor_fields = (
         "material_ids", "cluster_eps0", "cluster_k", "cluster_counts",
         "emissivity_ref", "emissivity_slope",
+        "material_class", "material_confidence", "cluster_class", "emissivity_min", "emissivity_max",
     )
     def __init__(self, sh_degree: int, device):
 

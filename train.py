@@ -618,6 +618,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, device):
             time_multires=geometry_time_multires,
         )
         rgb_geo_model.train_setting(opt)
+        if start_iteration > 0:
+            rgb_geo_model.load_weights(checkpoint_model_path, iteration=start_iteration, subdir="GeometryRGB")
         print("Using separate thermal/RGB view-dependent geometry refinement.")
     temporal_affine_model = None
     if opt.ir_temporal_affine:
@@ -844,6 +846,49 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, device):
                 opt.temporal_jitter_scale,
             )
         )
+
+    def run_material_probe(probe_iteration, probe_time_interval):
+        def material_deformation(view):
+            return compute_geo_fields(view, gaussians, rgb_geo_model if has_rgbt else geo_model,
+                                      pipe, background, opt, probe_iteration, smooth_term, probe_time_interval,
+                                      device, dataset.is_blender, feature_set="rgb", eval_mode=True)
+        context = {"pipeline": pipe, "deformation": material_deformation, "is_6dof": dataset.is_6dof}
+        fit_and_log_physir_attributes(probe_iteration, gaussians, scene, opt, model_path,
+                                     prev_probe_point_count, material_context=context)
+
+    if start_iteration > 0:
+        # Saved checkpoints contain weights, not Adam/RNG state. Resume with
+        # fresh Adam and restore the learning rates for the loaded global step.
+        for model in (gaussians, geo_model, rgb_geo_model, atmos_model, planck_model, radiometric_model):
+            if model is not None:
+                model.update_learning_rate(start_iteration)
+        print("[RESUME] weights_only; fresh_Adam; learning_rate_iteration={}".format(start_iteration))
+        initial_psnr = None
+        if getattr(opt, "resume_eval_before_train", False):
+            if start_iteration not in testing_iterations:
+                raise ValueError("Initial continuation evaluation must be in test_iterations")
+            zero = torch.zeros((), device=device)
+            with torch.no_grad():
+                value = training_report(dataset.source_path, model_path, tb_writer, start_iteration,
+                                        zero, zero, l1_loss, 0.0, testing_iterations, scene, render,
+                                        (pipe, background), geo_model, dataset.load2gpu_on_the_fly,
+                                        device, dataset.is_6dof, opt=opt, smooth_term=smooth_term,
+                                        rgb_geo_model=rgb_geo_model, temporal_affine_model=temporal_affine_model,
+                                        temporal_pose_model=temporal_pose_model)
+            initial_psnr = float(value)
+            best_psnr, best_iteration = initial_psnr, start_iteration
+        if getattr(opt, "resume_refit_probe", False):
+            interval = 1.0 / max(len(train_cameras), 1) if fixed_time_interval is None else fixed_time_interval * opt.temporal_jitter_scale
+            print("[RESUME] Refit Probe before first training update; metal initial/prior={}".format(
+                "material config" if getattr(opt, "phys_metal_e_init", -1.0) == -1.0 else opt.phys_metal_e_init))
+            # Partition lifting needs autograd even though the training graph
+            # has not been constructed yet.
+            run_material_probe(start_iteration, interval)
+            prev_probe_point_count = gaussians.get_xyz.shape[0]
+        if start_iteration in saving_iterations:
+            save_training_state(start_iteration)
+        if initial_psnr is not None and has_rgbt and getattr(opt, "rgbt_save_best_eval_checkpoint", False):
+            save_training_state(int(opt.iterations) + 1)
     # for iteration in range(1, opt.iterations + 1):
     for iteration in range(start_iteration + 1, opt.iterations + 1):
         iter_start.record()
@@ -1508,7 +1553,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, device):
                         save_training_state(best_mirror_iteration)
 
             if opt.phys_probe_every > 0 and iteration % opt.phys_probe_every == 0:
-                fit_and_log_physir_attributes(iteration, gaussians, scene, opt, model_path, prev_probe_point_count)
+                run_material_probe(iteration, time_interval)
                 prev_probe_point_count = gaussians.get_xyz.shape[0]
                 # Detailed radiative guidance and auxiliary-loss diagnostics are
                 # intentionally kept out of the console/result.txt logs. Full

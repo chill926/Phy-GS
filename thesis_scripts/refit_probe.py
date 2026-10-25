@@ -17,7 +17,7 @@ import shlex
 import torch
 
 from arguments import ModelParams, PipelineParams, OptimizationParams, get_combined_args
-from scene import Scene, GaussianModel
+from scene import Scene, GaussianModel, GeoRefineModel
 from utils.emissivity_models import probe_model_metadata
 from utils.radiative_utils import fit_and_log_physir_attributes
 
@@ -69,6 +69,22 @@ def main():
     with torch.no_grad():
         gaussians = GaussianModel(dataset.sh_degree, device)
         scene = Scene(dataset, gaussians, load_iteration=args.iteration, shuffle=False)
+    from utils.material_partition import resolve_material_inputs
+    material_context = None
+    if resolve_material_inputs(scene, opt) is not None:
+        from train import compute_geo_fields
+        pipeline = pipe_group.extract(args)
+        geo = GeoRefineModel(device, dataset.is_blender, dataset.is_6dof,
+                             time_multires=opt.geometry_time_multires if opt.geometry_time_multires >= 0 else None)
+        subdir = "GeometryRGB" if scene.has_rgbt else "Geometry"
+        geo.load_weights(str(source), iteration=args.iteration, subdir=subdir)
+        geo.geometry.eval()
+        background = torch.ones(3, device=device) if dataset.white_background else torch.zeros(3, device=device)
+        def material_deformation(view):
+            return compute_geo_fields(view, gaussians, geo, pipeline, background, opt, args.iteration,
+                                      lambda _: 0., 1./max(len(scene.getTrainCameras()), 1), device,
+                                      dataset.is_blender, feature_set="rgb", eval_mode=True)
+        material_context = {"pipeline": pipeline, "deformation": material_deformation, "is_6dof": dataset.is_6dof}
     destination.mkdir(parents=True)
     checkpoint = destination / "point_cloud" / ("iteration_{}".format(args.iteration))
     checkpoint.mkdir(parents=True)
@@ -77,7 +93,8 @@ def main():
         if (source / folder).exists():
             (destination / folder).symlink_to(source / folder, target_is_directory=True)
     n = int(gaussians.get_xyz.shape[0])
-    summary = fit_and_log_physir_attributes(args.iteration, gaussians, scene, opt, str(destination), n)
+    summary = fit_and_log_physir_attributes(args.iteration, gaussians, scene, opt, str(destination), n,
+                                          material_context=material_context)
     if not gaussians.save_radiative_transfer_attributes(str(checkpoint / "phys_probe.pt")):
         raise RuntimeError("Probe cache was not saved")
     saved = dict(vars(args))

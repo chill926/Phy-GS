@@ -39,12 +39,31 @@ def build_probe_fields(state, point_count):
                 raise ValueError("Invalid optional Probe field: " + name)
             fields[name] = value
     metadata = state.get("probe_metadata", {})
+    if "material_partition" in metadata:
+        for name in ("material_class", "material_confidence", "emissivity_min", "emissivity_max"):
+            if name not in state or state[name].numel() != point_count:
+                raise ValueError("Material Probe cache missing per-point field: " + name)
+        low, high = state["emissivity_min"].reshape(-1), state["emissivity_max"].reshape(-1)
+        if not ((e >= low-1e-6) & (e <= high+1e-6)).all():
+            raise ValueError("Cached emissivity violates material bounds")
+        if not torch.isin(state["material_class"].reshape(-1), torch.tensor([0, 1, 2], device=e.device)).all():
+            raise ValueError("Unknown cached material class")
+        fields["metal_fraction"] = (state["material_class"].reshape(-1) == 2).float()
+        fields["material_confidence"] = state["material_confidence"].reshape(-1).float()
+        confidence = fields["material_confidence"]
+        if not (torch.isfinite(confidence) & (confidence >= 0) & (confidence <= 1)).all():
+            raise ValueError("Invalid cached material confidence")
     if metadata.get("mode") in ("linear_emissivity", "learnable_linear_emissivity"):
         if not all(name in fields for name in ("emissivity_ref", "emissivity_slope")):
             raise ValueError("Linear Probe cache is missing its reference emissivity or slope")
         predicted = fields["emissivity_ref"] + fields["emissivity_slope"] * (fields["temperature_K"] - metadata["temperature_ref_K"])
         if not torch.allclose(predicted, fields["emissivity"], atol=2e-6, rtol=1e-5):
             raise ValueError("Cached emissivity does not match epsilon(T)")
+        if "material_partition" in metadata:
+            for temperature in (metadata["temperature_min_K"], metadata["temperature_max_K"]):
+                endpoint = fields["emissivity_ref"] + fields["emissivity_slope"]*(temperature-metadata["temperature_ref_K"])
+                if not ((endpoint >= low-1e-6) & (endpoint <= high+1e-6)).all():
+                    raise ValueError("Cached epsilon(T) endpoint violates its material interval")
     return fields
 
 

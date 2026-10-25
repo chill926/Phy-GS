@@ -34,6 +34,8 @@ from utils.radiative_utils import extract_thermal_gaussian_target, PlanckLUT
 
 
 LABELS = {
+    "metal_fraction": ("Visible contribution from metal-labelled Gaussians", "magma"),
+    "material_confidence": ("Fused material evidence (not calibrated probability)", "viridis"),
     "temperature_K": ("Probe temperature (K; uncalibrated)", "inferno"),
     "emissivity": ("Material emissivity at fitted T", "viridis"),
     "emissivity_ref": ("Reference emissivity at T_ref", "viridis"),
@@ -255,11 +257,14 @@ def run():
         point_extras = {}
         if "material_ids" in state:
             point_extras["material_ids"] = state["material_ids"].cpu().numpy().reshape(-1)
+        for name in ("material_class", "emissivity_min", "emissivity_max"):
+            if name in state and state[name].numel():
+                point_extras[name] = state[name].cpu().numpy().reshape(-1)
         np.savez_compressed(str(output / "gaussian_fields.npz"), xyz=xyz,
                             opacity=gaussians.get_opacity.cpu().numpy().reshape(-1),
                             **dict(field_arrays, **point_extras))
         coefficients = {name: state[name].cpu().numpy() for name in
-                        ("cluster_eps0", "cluster_k", "cluster_counts") if name in state}
+                        ("cluster_eps0", "cluster_k", "cluster_counts", "cluster_class") if name in state}
         if coefficients:
             np.savez_compressed(str(output / "material_parameters.npz"), **coefficients)
         plot_gaussians(output / "gaussian_fields_3d.png", xyz, field_arrays, scales)

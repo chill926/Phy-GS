@@ -34,6 +34,7 @@ class Scene:
         :param path: Path to colmap scene main folder.
         """
         self.model_path = args.model_path
+        self.source_path = args.source_path
         self.load_model_path = getattr(args, "load_model_path", "") or self.model_path
         self.loaded_iter = None
         self.gaussians = gaussians

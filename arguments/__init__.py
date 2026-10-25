@@ -217,8 +217,18 @@ class OptimizationParams(ParamGroup):
         self.densify_residual_weight_start_iter = 3000
         self.densify_residual_weight_blur = 1
         self.densify_residual_weight_split_only = False
-        # original keeps the existing material-constant Probe unchanged.
-        self.phys_probe_mode = "original"
+        # Default to the learned-slope material setup; explicit original/linear modes remain available.
+        self.phys_probe_mode = "learnable_linear_emissivity"
+        # Runtime fit override; leaves SAM3 mask/config hashes unchanged.
+        self.phys_metal_e_init = -1.0
+        self.phys_metal_e_half_range = -1.0
+        # Optional actions when continuing from a saved model.
+        self.resume_refit_probe = False
+        self.resume_eval_before_train = False
+        # auto uses train RGB masks when the matching SAM3 manifest exists; legacy disables them.
+        self.phys_material_mode = "auto"
+        self.phys_material_config = "data/materials/sam3_materials.json"
+        self.phys_material_manifest = ""
         self.phys_probe_temp_ref = 300.0
         # Fixed slope in linear_emissivity; initial slope in learnable_linear_emissivity.
         self.phys_probe_emissivity_slope = 0.0

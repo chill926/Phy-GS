@@ -5,7 +5,11 @@ __pycache__/
 .vscode/
 .idea/
 
-data/
+data/*
+!data/materials/
+data/materials/*
+!data/materials/*.json
+!data/materials/*.md
 output/
 tensorboard_3d/
 screenshots/

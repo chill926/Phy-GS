@@ -56,9 +56,6 @@ valid = d['valid_mask'].astype(bool)
 
 工具会检查点数、Probe 迭代、热 SH DC 对应关系、LUT 温度一致性、逐 Gaussian 及逐像素辐射项分解，记录 checkpoint 导出前后的 SHA256，确认源文件未变。源配置和 Probe 的哈希随结果保存在 `metadata.json`。
 
-```bash
-/home/liupengyu/miniconda3/envs/3dgs/bin/python -m unittest discover -s tests -p test_probe_maps.py
-```
 
 当前输入是处理后的伪彩图，LUT 温区为 260–360 K，波段为 7.5–13.5 um。输出的温度用于基线诊断，不能据此宣称 RoadBlock 的真实物体温度。其他辐射相关字段也是无量纲代理量，不是 W/(m^2 sr)。后续要验证绝对温度，应接入 FLIR 原始热数据及相机标定关系。
 

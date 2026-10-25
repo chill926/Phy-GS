@@ -79,10 +79,6 @@ CUDA_VISIBLE_DEVICES=0 /home/liupengyu/miniconda3/envs/3dgs/bin/python \
 
 ## 验证
 
-```bash
-/home/liupengyu/miniconda3/envs/3dgs/bin/python -m unittest discover -s tests -p test_probe_maps.py
-/home/liupengyu/miniconda3/envs/3dgs/bin/python -m unittest discover -s tests -p test_linear_emissivity.py
-```
 
 测试覆盖正负斜率的全温区边界、通过 T 的梯度、零斜率退回原模型、非法参数、新旧缓存和清空生命周期。RoadBlock 已完成非零斜率的真实 GPU Probe 拟合和数值关系校验。
 

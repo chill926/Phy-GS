@@ -1,0 +1,193 @@
+{
+  "schema_version": 1,
+  "mask_source_config": "sam3_materials_eps020_reference.json",
+  "labels": {
+    "unknown": 0,
+    "nonmetal": 1,
+    "metal": 2
+  },
+  "emissivity": {
+    "metal": {
+      "initial": 0.3,
+      "min": 0.2,
+      "max": 0.4
+    },
+    "nonmetal": "inherit_probe",
+    "unknown": "inherit_probe"
+  },
+  "sam3": {
+    "checkpoint": "/home/liupengyu/sam3/checkpoints/sam3.pt",
+    "instance_threshold": 0.35,
+    "pixel_threshold": 0.2,
+    "conflict_margin": 0.1,
+    "prompts": {
+      "metal": [
+        "bare metal surface",
+        "metal object",
+        "metal screw",
+        "metal bolt",
+        "metal nut",
+        "metal plate"
+      ],
+      "nonmetal": [
+        "plastic object",
+        "rubber object",
+        "wooden surface",
+        "concrete surface",
+        "fabric",
+        "reflective tape"
+      ]
+    },
+    "pipeline_version": 2,
+    "mask_probability_threshold": 0.55,
+    "anchor_crops": {
+      "enabled": true,
+      "max_anchors": 1,
+      "width_factor": 2.0,
+      "height_factor": 0.55,
+      "bottom_padding": 0.15,
+      "min_size": 128,
+      "retry_horizontal_offsets": [
+        -0.1,
+        0.1
+      ],
+      "context_scale": 1.25,
+      "context_bottom_padding": 0.35
+    },
+    "groups": [
+      {
+        "name": "metal_objects",
+        "class": "metal",
+        "prompts": [
+          "bare metal surface",
+          "metal object",
+          "metal screw",
+          "metal bolt",
+          "metal nut",
+          "metal plate"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.5,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "nonmetal_objects",
+        "class": "nonmetal",
+        "prompts": [
+          "plastic object",
+          "rubber object",
+          "wooden surface",
+          "concrete surface",
+          "fabric",
+          "reflective tape"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.5,
+        "views": [
+          "full"
+        ]
+      }
+    ],
+    "scene_groups": {
+      "RoadBlock": [
+        {
+          "name": "ground",
+          "class": "nonmetal",
+          "prompts": [
+            "concrete ground"
+          ],
+          "priority": 0,
+          "instance_threshold": 0.5,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "bollard",
+          "class": "nonmetal",
+          "prompts": [
+            "bollard",
+            "red bollard",
+            "red plastic post"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.45,
+          "views": [
+            "full"
+          ],
+          "crop_anchor": true,
+          "max_mask_fraction": 0.5
+        },
+        {
+          "name": "reflective_tape",
+          "class": "nonmetal",
+          "prompts": [
+            "reflective tape"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.5,
+          "views": [
+            "full"
+          ],
+          "max_mask_fraction": 0.2
+        },
+        {
+          "name": "fasteners",
+          "class": "metal",
+          "prompts": [
+            "metal screw",
+            "metal bolt",
+            "metal nut"
+          ],
+          "priority": 30,
+          "instance_threshold": 0.5,
+          "views": [
+            "full",
+            "anchor_base"
+          ],
+          "max_mask_fraction": 0.01,
+          "max_crop_mask_fraction": 0.12
+        },
+        {
+          "name": "ground_block",
+          "class": "metal",
+          "prompts": [
+            "block on the ground",
+            "metal slab",
+            "metal block"
+          ],
+          "priority": 30,
+          "instance_threshold": 0.35,
+          "views": [
+            "anchor_base"
+          ],
+          "max_mask_fraction": 0.025,
+          "max_crop_mask_fraction": 0.18,
+          "min_mask_pixels": 12,
+          "retry_crops": true
+        }
+      ]
+    },
+    "mask_directory": "material_masks/sam3_v2"
+  },
+  "fusion": {
+    "max_views": 12,
+    "min_views": 2,
+    "min_known_fraction": 0.2,
+    "min_class_agreement": 0.75,
+    "min_accumulation": 0.15,
+    "relative_depth_jump": 0.03,
+    "min_region_pixels": 12,
+    "neighbors": 8,
+    "neighbor_distance_factor": 3.0,
+    "min_same_region_views": 2,
+    "max_region_conflict_fraction": 0.2
+  },
+  "optimization": {
+    "emissivity_start_fraction": 0.25,
+    "slope_start_fraction": 0.5,
+    "emissivity_lr_scale": 0.25
+  }
+}

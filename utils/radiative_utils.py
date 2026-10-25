@@ -53,6 +53,10 @@ def corrcoef(x: torch.Tensor, y: torch.Tensor) -> float:
 
 def frac_near_bounds(x: torch.Tensor, low: float, high: float, tol: float) -> Dict[str, float]:
     x = x.detach().reshape(-1)
+    if torch.is_tensor(low):
+        low = low.detach().reshape(-1)
+    if torch.is_tensor(high):
+        high = high.detach().reshape(-1)
     if x.numel() == 0:
         return {"near_low": float("nan"), "near_high": float("nan")}
     return {
@@ -728,7 +732,14 @@ def _fit_linear_emissivity_rt_attributes(extracted: Dict[str, torch.Tensor], gau
 def fit_material_decoupled_rt_attributes(extracted, gaussians, opt, device, lut):
     """Dispatch without changing the original mode's numerical implementation."""
     metadata = probe_model_metadata(opt)
-    if metadata["mode"] in ("linear_emissivity", "learnable_linear_emissivity"):
+    if "material_partition" in extracted:
+        from utils.material_probe import fit_partitioned_attributes
+        pairs = _local_smooth_pairs(gaussians.get_xyz.detach(), int(getattr(opt, "phys_decouple_smooth_samples", 60000)), device)
+        fit = fit_partitioned_attributes(extracted, gaussians, opt, device, lut, extracted["material_partition"], pairs)
+        metadata.update(schema_version=4, material_partition=fit.pop("_material_metadata"),
+                        emissivity_bounds_policy="per_material_class_over_entire_temperature_interval",
+                        eps0_parameterization="fitted_per_material_depth_region_with_class_prior")
+    elif metadata["mode"] in ("linear_emissivity", "learnable_linear_emissivity"):
         fit = _fit_linear_emissivity_rt_attributes(extracted, gaussians, opt, device, lut)
     else:
         fit = _fit_material_constant_rt_attributes(extracted, gaussians, opt, device, lut)
@@ -801,7 +812,8 @@ def gather_rt_summary(iteration, prev_point_count, gaussians, extracted, fit, op
     _add_prefixed(summary, "residual_ratio", tensor_stats(residual_ratio))
 
     temp_bounds = frac_near_bounds(temp, opt.phys_probe_temp_min, opt.phys_probe_temp_max, tol=0.5)
-    e_bounds = frac_near_bounds(emissivity, opt.phys_probe_e_min, opt.phys_probe_e_max, tol=1e-3)
+    e_bounds = frac_near_bounds(emissivity, fit.get("emissivity_min", opt.phys_probe_e_min),
+                               fit.get("emissivity_max", opt.phys_probe_e_max), tol=1e-3)
     summary["temperature_near_min_frac"] = temp_bounds["near_low"]
     summary["temperature_near_max_frac"] = temp_bounds["near_high"]
     summary["emissivity_near_min_frac"] = e_bounds["near_low"]
@@ -850,6 +862,10 @@ def append_physir_summary(log_path: str, summary: Dict[str, float]) -> None:
 
 def _attach_material_fit_summary(summary: Dict[str, float], fit: Dict[str, torch.Tensor]) -> None:
     metadata = fit.get("probe_metadata", {})
+    if "material_partition" in metadata:
+        for name, count in metadata["material_partition"]["point_counts"].items():
+            summary["material_" + name + "_count"] = count
+        summary["material_depth_regions"] = metadata["material_partition"]["clusters"]
     summary["probe_mode"] = metadata.get("mode", "original")
     summary["fit_method"] = ("material_cluster_emissivity_temperature_smooth"
                              if summary["probe_mode"] == "original"
@@ -882,8 +898,8 @@ def _attach_material_fit_summary(summary: Dict[str, float], fit: Dict[str, torch
     summary["cluster_count_max"] = counts.max().item()
 
 
-def fit_and_log_physir_attributes(iteration: int, gaussians, scene, opt, model_path: str, prev_point_count: int):
-    del scene
+def fit_and_log_physir_attributes(iteration: int, gaussians, scene, opt, model_path: str, prev_point_count: int,
+                                material_context=None):
     device = gaussians.get_xyz.device
     if gaussians.get_xyz.numel() == 0:
         return None
@@ -897,6 +913,14 @@ def fit_and_log_physir_attributes(iteration: int, gaussians, scene, opt, model_p
     )
 
     extracted = extract_thermal_gaussian_target(gaussians)
+    from utils.material_partition import lift_material_partition
+    features = _material_features(gaussians, extracted, opt)
+    def fallback_cluster(selected):
+        return _assign_kmeans(features[selected], int(opt.phys_decouple_clusters),
+                              int(opt.phys_decouple_cluster_samples), int(opt.phys_decouple_cluster_iters))
+    partition = lift_material_partition(scene, gaussians, opt, material_context, fallback_cluster)
+    if partition is not None:
+        extracted["material_partition"] = partition
     with torch.enable_grad():
         fit = fit_material_decoupled_rt_attributes(extracted, gaussians, opt, device, lut)
 
@@ -913,7 +937,8 @@ def fit_and_log_physir_attributes(iteration: int, gaussians, scene, opt, model_p
         rgb_dc=extracted["rgb_dc"],
         **{name: fit[name] for name in (
             "probe_metadata", "material_ids", "cluster_eps0", "cluster_k", "cluster_counts",
-            "emissivity_ref", "emissivity_slope") if name in fit},
+            "emissivity_ref", "emissivity_slope", "material_class", "material_confidence", "cluster_class",
+            "emissivity_min", "emissivity_max") if name in fit},
     )
 
     summary = gather_rt_summary(iteration, prev_point_count, gaussians, extracted, fit, opt)

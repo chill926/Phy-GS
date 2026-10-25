@@ -1,6 +1,6 @@
 # 可学习斜率的温度相关发射率 Probe
 
-在 `/home/liupengyu/physir-splat` 中执行。新增模式 `learnable_linear_emissivity`；原来的 `original` 和固定斜率 `linear_emissivity` 模式继续可用，默认仍为 `original`。
+在项目根目录中执行。默认模式为 `learnable_linear_emissivity`；`original` 和固定斜率 `linear_emissivity` 模式继续可用。当前材料默认值与 SAM3 掩膜生成方式见 [材料配置说明](../data/materials/README.md)。
 
 ## 参数化与优化
 
@@ -18,7 +18,7 @@ q_i = epsilon_i*u_i + (1-epsilon_i)*ambient + delta_i
 
 `c`、`d` 均为每簇一个可学习参数。因此 eps0 与 k 都能改变，两者受同一全温区边界约束。T_ref 固定。正、负斜率均可学习。端点约束保证整个 [T_min,T_max] 的 epsilon 都在 [e_min,e_max]，不依赖硬截断。
 
-默认从 k=0、eps0=0.95 开始。每次独立 Probe 拟合的前 25% 内部步数冻结 d，此时 k 严格为 0，共同中心 c、温度、环境和残差仍优化；其后解冻 d。128 步即先 32 步再联合优化 96 步。这是每次 Probe 的内部预热，不是完整 3DGS 训练的前 25%。现有 Probe 每次重新聚类、初始化；本次没有引入跨 Probe 的参数继承。
+默认从 k=0 开始；SAM3 材料分支中，金属 eps0 初值为0.30、范围0.20～0.40，非金属及未知类别维持0.95、0.85～0.99。128步拟合在第32步释放参考发射率与残差，第64步释放斜率，阶段设置来自材料JSON。旧聚类分支仍使用 `phys_probe_slope_warmup_fraction` 控制斜率预热。上述阶段都是每次独立 Probe 内部的步数，不是完整3DGS训练的比例；没有跨Probe的参数继承。
 
 新增参数：
 
@@ -36,16 +36,17 @@ q_i = epsilon_i*u_i + (1-epsilon_i)*ambient + delta_i
 
 ```bash
 cd /home/liupengyu/physir-splat
-bash thesis_scripts/run_roadblock_learnable.sh 0
+CUDA_VISIBLE_DEVICES=0 python -u train.py \
+  -s data/RGBT-Scenes/RoadBlock \
+  -m "output/RoadBlock_sam3_$(date +%Y%m%d_%H%M%S)" \
+  --data_branch rgbt --eval --load2gpu_on_the_fly \
+  --iterations 30000 --phys_material_mode sam3_depth \
+  --phys_material_config data/materials/sam3_materials.json \
+  --phys_probe_mode learnable_linear_emissivity \
+  --phys_probe_every 1000 --phys_decouple_steps 128
 ```
 
-第一个参数是 GPU 编号；第二个可选参数是新的输出路径：
-
-```bash
-bash thesis_scripts/run_roadblock_learnable.sh 0 output/RoadBlock_learnable_my_run/all
-```
-
-脚本完成 30000 步训练后，自动导出最终 checkpoint 的所有 test 视角物理量图。保留之前命令的训练参数及已有物理辅助损失默认值；没有加入不确定度模块。该辅助损失在后期可能受 Probe 改变影响，因此固定检查点重拟合和完整训练应分别解读。
+该命令直接显示训练日志；完成后可用 `render_probe_maps.py` 显式导出所需检查点。后期一致性及物理辅助损失保留现有默认值。固定检查点重拟合和完整训练的结果应分别解读。
 
 ## 固定已训练点云，单独验证 Probe
 
@@ -74,9 +75,5 @@ CUDA_VISIBLE_DEVICES=0 /home/liupengyu/miniconda3/envs/3dgs/bin/python \
 
 日志保存斜率 min/max/mean/std、整个温区的发射率 extrema，并在终端显示斜率范围。发射率实际值接近边界、系数剧烈变化或温度场明显漂移时，应与零斜率对照一起检查。
 
-```bash
-/home/liupengyu/miniconda3/envs/3dgs/bin/python -m unittest discover -s tests -p 'test_*emissivity.py' -v
-/home/liupengyu/miniconda3/envs/3dgs/bin/python -m unittest discover -s tests -p test_probe_maps.py -v
-```
 
 当前伪彩图经亮度转换，温度仍是归一化 Planck LUT 的估计量。可学习斜率属于先验约束下的有效系数；数值收敛或更低拟合误差不能独立证明真实温度或材料斜率更准确。合成已知温度测试仅验证可辨识子问题中的实现正确性。
