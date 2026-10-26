@@ -25,13 +25,13 @@ SAM3 判断的是视觉与文字的匹配，不能测量真实材质或发射率
 | --- | --- | --- | --- | --- |
 | 0 | 未知 | 灰 | 继承原 Probe，默认 0.95 | 继承原 Probe，默认 0.85～0.99 |
 | 1 | 非金属 | 绿 | 继承原 Probe，默认 0.95 | 继承原 Probe，默认 0.85～0.99 |
-| 2 | 金属 | 蓝 | 0.30 | 0.20～0.40 |
+| 2 | 金属 | 蓝 | 0.30 | 0.20～0.40（中心±0.10） |
 
 `inherit_probe` 保留现有 `--phys_probe_e_init`、`--phys_probe_e_min`、`--phys_probe_e_max` 的设置。金属单独使用 JSON 中的值。原有手工 `material_masks` 不覆盖，v2 数据保存于 `material_masks/sam3_v2/`，原 v1 数据保留在 `material_masks/sam3/`。两种掩膜的标签定义不同，不能混用。
 
 三种 Probe 模式都支持材料约束：`original`、`linear_emissivity`、`learnable_linear_emissivity`。线性模型对整个配置温度区间约束 ε(T)，包括可学习斜率；固定斜率不可行时明确报错。
 
-主训练入口现在默认使用 `learnable_linear_emissivity`，金属默认值来自当前 JSON 的0.30/0.20～0.40；非金属和未知类别维持原设置。`--phys_metal_e_init` 与 `--phys_metal_e_half_range` 仍可显式覆盖各次实验。学习率、调度、损失权重及几何网络训练期限在本次材料默认值更新中没有改动。
+主训练入口默认使用 `sam3_depth` 材料分区和 `learnable_linear_emissivity`，金属默认值来自当前 JSON：初值和先验中心0.30、范围0.20～0.40，沿用中心±0.10；非金属和未知类别维持原设置。其他训练设置对齐最佳完整运行 `RoadBlock_sam3_v2_20261025_134535`：关闭新增的后期衰减（`late_lr_final_factor=1.0`），保留原XYZ/网络调度、Adam、Probe及损失权重；没有把旋转组eps改成诊断中尝试的1e-8。`--phys_metal_e_init` 与 `--phys_metal_e_half_range` 仍可显式覆盖，当前对应 `--phys_metal_e_init 0.3 --phys_metal_e_half_range 0.1`。若复用余弦试验命令，删除其中的 `--late_lr_final_factor 0.1` 或改成 `--late_lr_final_factor 1.0`，避免命令行覆盖当前默认值。
 
 `sam3_materials_eps020_reference.json` 保留旧配置原始字节及签名。当前配置的 `mask_source_config` 仅用于兼容已生成的分割缓存：加载器要求旧配置与当前配置的标签及全部 SAM3 设置完全相同，并校验 manifest 的原配置签名。发射率拟合始终读取当前 JSON，不会从参考文件恢复旧发射率值。现有 v2 掩膜和 manifest 无需修改，也无需重新运行 SAM3。
 
@@ -82,7 +82,7 @@ v2 的 `pixel_threshold=0.2` 是经过实例过滤之后的最低证据阈值，
 
 ## 训练与现有检查点重拟合
 
-`--phys_material_mode auto` 是默认值：配置的 `sam3.mask_directory` 下有完整匹配的 manifest 时启用材料划分；没有时保持旧 Probe。`sam3_depth` 要求掩膜存在，适合明确使用新版材料划分的实验；`legacy` 显式使用原流程。已有完整掩膜时，下列命令可启动一个新实验（选择空闲 GPU 与新的输出目录）：
+`--phys_material_mode sam3_depth` 是默认值：要求配置的 `sam3.mask_directory` 下有匹配的训练掩膜与 manifest；缺少掩膜时提示先运行 SAM3。`auto` 仍可显式选择，掩膜不存在时使用旧 Probe；`legacy` 显式使用原流程。已有完整掩膜时，下列命令可启动一个新实验（选择空闲 GPU 与新的输出目录）：
 
 ```bash
 conda activate 3dgs

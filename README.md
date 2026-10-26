@@ -2,7 +2,9 @@
 
 This repository contains research modifications to [PhysIR-Splat](https://github.com/JingyuanGao0919/physir-splat). The upstream Git history, license, and copyright notices are preserved.
 
-The additions include SAM3 open-vocabulary material segmentation, depth-aware material grouping, fixed-slope and learnable linear emissivity probes, probe map export, and FLIR display mapping tools. The default Probe learns the emissivity slope. Metal starts at 0.30 with bounds 0.20–0.40 over the fitted temperature interval; nonmetal and unknown regions retain the original 0.95 initial value and 0.85–0.99 bounds. Learning-rate schedules retain their existing settings.
+The additions include SAM3 open-vocabulary material segmentation, depth-aware material grouping, fixed-slope and learnable linear emissivity probes, probe map export, and FLIR display mapping tools. The default Probe learns the emissivity slope and uses SAM3 depth-based material partitions. Metal starts at 0.30 with bounds 0.20–0.40 (center ±0.10) over the fitted temperature interval; nonmetal and unknown regions retain the original 0.95 initial value and 0.85–0.99 bounds.
+
+The training defaults use the settings of the best full RoadBlock run (`RoadBlock_sam3_v2_20261025_134535`), with only the metal emissivity initial/prior center and bounds changed as described above. Extra late learning-rate decay is disabled (`late_lr_final_factor=1.0`); the original XYZ/network schedules, Adam settings, losses, and Probe settings are preserved. When reusing a command from a late-LR experiment, remove its `--late_lr_final_factor 0.1` override or change it to `1.0`. New training defaults to `phys_material_mode=sam3_depth` and requires compatible SAM3 train masks. Existing RoadBlock v2 masks can be reused.
 
 SAM3 runs offline in its own environment. Training reads the generated train-view masks without importing SAM3. Scene images, model weights, generated masks, and training outputs are excluded from Git; the material configuration and implementation are included. See the accompanying guides:
 

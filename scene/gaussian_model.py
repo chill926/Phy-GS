@@ -11,7 +11,7 @@
 
 import torch
 import numpy as np
-from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation
+from utils.general_utils import inverse_sigmoid, get_expon_lr_func, get_late_lr_func, build_rotation
 from torch import nn
 import os
 from utils.system_utils import mkdir_p
@@ -249,10 +249,27 @@ class GaussianModel:
             l.insert(4, {'params': [self._thermal_features_rest], 'lr': thermal_lr / 20.0, "name": "thermal_rest"})
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
+        self.late_lr_scheduler = get_late_lr_func(
+            getattr(training_args, "late_lr_start_iter", 20000),
+            getattr(training_args, "late_lr_end_iter", 30000),
+            getattr(training_args, "late_lr_final_factor", 1.0),
+            getattr(training_args, "late_lr_schedule", "cosine"),
+        )
+        selected = {"f_dc", "f_rest", "thermal_dc", "thermal_rest", "opacity", "scaling", "rotation"}
+        self.late_lr_base = {group["name"]: group["lr"] for group in self.optimizer.param_groups
+                             if group["name"] in selected}
         self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init * self.spatial_lr_scale,
                                                     lr_final=training_args.position_lr_final * self.spatial_lr_scale,
                                                     lr_delay_mult=training_args.position_lr_delay_mult,
                                                     max_steps=training_args.position_lr_max_steps)
+
+    def update_late_learning_rates(self, iteration):
+        """Scale saved base rates; leave XYZ and all network optimizers alone."""
+        factor = self.late_lr_scheduler(iteration)
+        for group in self.optimizer.param_groups:
+            if group["name"] in self.late_lr_base:
+                group["lr"] = self.late_lr_base[group["name"]] * factor
+        return factor
 
     def update_learning_rate(self, iteration):
         ''' Learning rate scheduling per step '''

@@ -75,6 +75,27 @@ def get_expon_lr_func(
     return helper
 
 
+def get_late_lr_func(start_step, end_step, final_factor, schedule="cosine"):
+    """An optional multiplier with exact endpoints and no compounded decay."""
+    if schedule not in ("cosine", "exponential"):
+        raise ValueError("late_lr_schedule must be cosine or exponential")
+    if (not all(np.isfinite(v) for v in (start_step, end_step, final_factor))
+            or not 0 <= start_step < end_step or not 0 < final_factor <= 1):
+        raise ValueError("Require 0 <= late_lr_start_iter < late_lr_end_iter and 0 < final_factor <= 1")
+
+    def multiplier(step):
+        if final_factor == 1 or step <= start_step:
+            return 1.0
+        if step >= end_step:
+            return float(final_factor)
+        progress = (step-start_step)/(end_step-start_step)
+        if schedule == "exponential":
+            return float(np.exp(np.log(final_factor)*progress))
+        return float(final_factor+(1-final_factor)*0.5*(1+np.cos(np.pi*progress)))
+
+    return multiplier
+
+
 def get_linear_noise_func(
         lr_init, lr_final, lr_delay_steps=0, lr_delay_mult=1.0, max_steps=1000000
 ):

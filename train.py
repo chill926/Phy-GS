@@ -11,6 +11,7 @@
 
 from datetime import datetime
 import os
+import json
 from pathlib import Path
 import time
 import torch
@@ -856,6 +857,23 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, device):
         fit_and_log_physir_attributes(probe_iteration, gaussians, scene, opt, model_path,
                                      prev_probe_point_count, material_context=context)
 
+    models = {"gaussians": gaussians, "geometry": geo_model, "geometry_rgb": rgb_geo_model,
+              "atmos": atmos_model, "planck": planck_model, "radiometric": radiometric_model}
+
+    def log_learning_rates(iteration, factor):
+        rates = {name: {group.get("name", str(index)): float(group["lr"])
+                        for index, group in enumerate(model.optimizer.param_groups)}
+                 for name, model in models.items() if model is not None}
+        row = {"iteration": iteration, "late_schedule": opt.late_lr_schedule,
+               "late_factor": factor, "learning_rates": rates,
+               "optimizer_update_expected": start_iteration < iteration < opt.iterations}
+        with open(os.path.join(model_path, "learning_rates.jsonl"), "a") as stream:
+            stream.write(json.dumps(row) + "\n")
+        values = " ".join("{}={:.4g}".format(name, lr) for name, lr in rates["gaussians"].items())
+        print("[LR][iter {}] schedule={} late_factor={:.6f} {}".format(
+            iteration, opt.late_lr_schedule, factor, values))
+
+    initial_psnr = None
     if start_iteration > 0:
         # Saved checkpoints contain weights, not Adam/RNG state. Resume with
         # fresh Adam and restore the learning rates for the loaded global step.
@@ -863,7 +881,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, device):
             if model is not None:
                 model.update_learning_rate(start_iteration)
         print("[RESUME] weights_only; fresh_Adam; learning_rate_iteration={}".format(start_iteration))
-        initial_psnr = None
         if getattr(opt, "resume_eval_before_train", False):
             if start_iteration not in testing_iterations:
                 raise ValueError("Initial continuation evaluation must be in test_iterations")
@@ -889,9 +906,15 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, device):
             save_training_state(start_iteration)
         if initial_psnr is not None and has_rgbt and getattr(opt, "rgbt_save_best_eval_checkpoint", False):
             save_training_state(int(opt.iterations) + 1)
-    # for iteration in range(1, opt.iterations + 1):
+    log_learning_rates(start_iteration, gaussians.update_late_learning_rates(start_iteration))
     for iteration in range(start_iteration + 1, opt.iterations + 1):
         iter_start.record()
+        # Set only the added schedule before this iteration's update; retain
+        # the original XYZ/network scheduler update order.
+        late_factor = gaussians.update_late_learning_rates(iteration)
+        if (iteration == start_iteration + 1 or iteration % 1000 == 0
+                or iteration == getattr(opt, "late_lr_end_iter", 30000) or iteration == opt.iterations):
+            log_learning_rates(iteration, late_factor)
 
         # Every 1000 its we increase the levels of SH up to a maximum degree
         if iteration % 1000 == 0:

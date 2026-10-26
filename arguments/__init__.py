@@ -117,6 +117,12 @@ class OptimizationParams(ParamGroup):
         self.opacity_lr = 0.05
         self.scaling_lr = 0.001
         self.rotation_lr = 0.001
+        # Preserve the best full run's LR settings: no added late decay.
+        # The optional schedule is enabled only when the final factor is below 1.
+        self.late_lr_start_iter = 20_000
+        self.late_lr_end_iter = 30_000
+        self.late_lr_final_factor = 1.0
+        self.late_lr_schedule = "cosine"
         self.percent_dense = 0.01
         self.lambda_dssim = 0.2
         self.ir_gradient_loss_weight = 0.0
@@ -225,8 +231,9 @@ class OptimizationParams(ParamGroup):
         # Optional actions when continuing from a saved model.
         self.resume_refit_probe = False
         self.resume_eval_before_train = False
-        # auto uses train RGB masks when the matching SAM3 manifest exists; legacy disables them.
-        self.phys_material_mode = "auto"
+        # Require SAM3 train masks for the selected material workflow.
+        # auto permits the old fallback; legacy explicitly disables material masks.
+        self.phys_material_mode = "sam3_depth"
         self.phys_material_config = "data/materials/sam3_materials.json"
         self.phys_material_manifest = ""
         self.phys_probe_temp_ref = 300.0
