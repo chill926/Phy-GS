@@ -41,6 +41,7 @@ from scene import (
     RadiometricModel,
 )
 from utils.general_utils import safe_state, get_linear_noise_func
+from utils.dropgaussian import ProgressiveIRDropGaussian
 from tqdm import tqdm
 from utils.image_utils import psnr
 from utils.radiative_utils import (
@@ -566,6 +567,15 @@ def quantize_like_save_image(image):
 
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, device):
+    ir_geometry_mode = getattr(opt, "ir_geometry_mode", "learned")
+    if ir_geometry_mode not in ("learned", "static"):
+        raise ValueError("ir_geometry_mode must be learned or static")
+    late_l1_weight = float(getattr(opt, "ir_late_l1_weight", -1.0))
+    if not math.isfinite(late_l1_weight) or (late_l1_weight < 0.0 and late_l1_weight != -1.0):
+        raise ValueError("ir_late_l1_weight must be -1 (auto) or finite and nonnegative")
+    ir_dropgaussian = ProgressiveIRDropGaussian(
+        opt.iterations, opt.ir_dropgaussian_max_rate, opt.ir_dropgaussian_seed,
+    )
     start_time = time.time()
     tb_writer, model_path = prepare_output_and_logger(dataset)
     with open(os.path.join(model_path, "cfg_args"), 'w') as cfg_log_f:
@@ -584,8 +594,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, device):
         dataset.is_blender,
         dataset.is_6dof,
         time_multires=geometry_time_multires,
+        enabled=ir_geometry_mode == "learned",
     )
     geo_model.train_setting(opt)
+    print("[IR_GEOMETRY] mode={}; static disables only the IR residual field; "
+          "base Gaussians and the separate RGB geometry network remain trainable.".format(ir_geometry_mode))
 
     requested_load_iteration = int(getattr(dataset, "load_iteration", 0) or 0)
     scene = Scene(
@@ -681,7 +694,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, device):
         "robust_loss_weight={:.4f}, robust_beta={:.4f}, robust_min_weight={:.3f}, "
         "rmse_loss_weight={:.4f}, trimmed_loss_weight={:.4f}(q={:.3f},mode={},win={}), "
         "multiscale_loss_weight={:.4f}({}/{}), "
-        "late_rt_weight={:.4f}@{}, late_ssim_weight={:.4f}, "
+        "late_rt_weight={:.4f}@{}, late_ssim_weight={:.4f}, late_l1_weight={:.4f}(-1=auto), "
         "eval_temporal_ensemble={}({}x radius{}), eval_opacity_threshold={:.4f}, "
         "temporal_affine={}({}), temporal_affine_smooth={}, densify_threshold={}, densify_abs_threshold={}, dual_densify={}, "
         "direction_aware={} abs_split={}, dgc={}, needle_interval={}, screen_weight_power={}, residual_weight_power={}, "
@@ -739,6 +752,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, device):
             opt.ir_late_consistency_weight,
             opt.ir_late_consistency_start_iter,
             opt.ir_late_ssim_weight,
+            opt.ir_late_l1_weight,
             opt.ir_eval_temporal_ensemble,
             opt.ir_eval_temporal_ensemble_samples,
             opt.ir_eval_temporal_ensemble_radius,
@@ -906,6 +920,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, device):
             save_training_state(start_iteration)
         if initial_psnr is not None and has_rgbt and getattr(opt, "rgbt_save_best_eval_checkpoint", False):
             save_training_state(int(opt.iterations) + 1)
+    print("[DropGaussian] IR training only; linear p=0 -> {:.3f} over {} iterations; "
+          "seed={}; RGB/eval/Probe/material renders use the full model".format(
+              ir_dropgaussian.max_rate, opt.iterations, ir_dropgaussian.seed))
     log_learning_rates(start_iteration, gaussians.update_late_learning_rates(start_iteration))
     for iteration in range(start_iteration + 1, opt.iterations + 1):
         iter_start.record()
@@ -1038,6 +1055,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, device):
             else 0.0
         )
         radiative_color = gaussians.get_physir_response_rgb if radiative_blend > 0.0 else None
+        opacity_compensation, drop_rate = ir_dropgaussian.sample(gaussians.get_opacity, iteration)
         render_pkg_re = render(
             viewpoint_cam,
             gaussians,
@@ -1051,7 +1069,21 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, device):
             radiative_color=radiative_color,
             radiative_blend=radiative_blend,
             feature_set="thermal" if has_rgbt else "rgb",
+            opacity_compensation=opacity_compensation,
         )
+        if iteration == start_iteration + 1 or iteration % 1000 == 0 or iteration == opt.iterations:
+            dropped = int((opacity_compensation == 0).sum().item()) if opacity_compensation is not None else 0
+            point_count = int(gaussians.get_xyz.shape[0])
+            row = {"iteration": iteration, "rate": drop_rate, "dropped": dropped,
+                   "points": point_count, "seed": ir_dropgaussian.seed,
+                   "total_iterations": ir_dropgaussian.total_iterations}
+            with open(os.path.join(model_path, "ir_dropgaussian.jsonl"), "a") as stream:
+                stream.write(json.dumps(row) + "\n")
+            print("[DropGaussian][iter {}] p={:.6f} dropped={}/{} ({:.3%})".format(
+                iteration, drop_rate, dropped, point_count, dropped / max(point_count, 1)))
+            if tb_writer:
+                tb_writer.add_scalar("ir_dropgaussian/rate", drop_rate, iteration)
+                tb_writer.add_scalar("ir_dropgaussian/dropped_fraction", dropped / max(point_count, 1), iteration)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg_re["render"], render_pkg_re[
             "viewspace_points"], render_pkg_re["visibility_filter"], render_pkg_re["radii"]
         temporal_scale_delta = None
@@ -1159,6 +1191,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, device):
             )
 
             photo_weight = max(0.0, 1.0 - late_ssim_weight - late_consistency_weight)
+            if late_l1_weight >= 0.0:
+                photo_weight = late_l1_weight
             loss = (
                 photo_weight * photo_loss
                 + late_ssim_weight * (1.0 - ssim(image, gt_image))

@@ -85,6 +85,9 @@ class PipelineParams(ParamGroup):
 class OptimizationParams(ParamGroup):
     def __init__(self, parser, sentinel=False):
         self.iterations = 30000
+        # IR training uses progressive DropGaussian from the first iteration.
+        self.ir_dropgaussian_max_rate = 0.2
+        self.ir_dropgaussian_seed = 0
         self.warm_up = 3_000
         # self.warm_up = 0
         self.position_lr_init = 0.00016
@@ -97,6 +100,8 @@ class OptimizationParams(ParamGroup):
         self.geometry_lr_max_steps = 30_000
         self.geometry_time_multires = -1
         self.geometry_conditioning = "view"
+        # Experimental IR-only ablation; RGB geometry and base Gaussians stay trainable.
+        self.ir_geometry_mode = "learned"  # learned | static
         self.geometry_train_until_iter = 1_000_000
         self.geometry_grad_clip_norm = 0.0
         self.temporal_jitter_mode = "stack"
@@ -158,6 +163,8 @@ class OptimizationParams(ParamGroup):
         self.ir_late_consistency_start_iter = 20_000
         self.ir_late_consistency_weight = 0.2
         self.ir_late_ssim_weight = 0.2
+        # B loss: keep L1 at 0.8 when adding late RT; -1 selects the old rule.
+        self.ir_late_l1_weight = 0.8
         self.ir_eval_temporal_ensemble = False
         self.ir_eval_temporal_ensemble_samples = 3
         self.ir_eval_temporal_ensemble_radius = 0.5

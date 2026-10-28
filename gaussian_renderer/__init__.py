@@ -42,11 +42,15 @@ def quaternion_multiply(q1, q2):
 def render(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Tensor, d_xyz, d_rotation, d_scaling, device, is_6dof=False,
            scaling_modifier=1.0, override_color=None, scale_factor=1, radiative_color=None, radiative_blend=0.0,
            physical_color=None, physical_blend=0.0, feature_set="rgb", detach_geometry=False,
-           opacity_threshold=0.0):
+           opacity_threshold=0.0, opacity_compensation=None):
     """
     Render the scene.
 
     Background tensor (bg_color) must be on GPU!
+
+    opacity_compensation is supplied only by the primary IR training render.
+    Evaluation, RGB, depth and material/Probe renders keep full opacity even
+    when called under enable_grad. Never modify pc's stored opacity in place.
     """
     scaled_height = viewpoint_camera.image_height // scale_factor
     scaled_width = viewpoint_camera.image_width // scale_factor
@@ -96,6 +100,10 @@ def render(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Tensor, d_
     opacity = pc.get_opacity.detach() if detach_geometry else pc.get_opacity
     if float(opacity_threshold) > 0.0:
         opacity = torch.where(opacity >= float(opacity_threshold), opacity, torch.zeros_like(opacity))
+    if opacity_compensation is not None:
+        if opacity_compensation.shape != opacity.shape or opacity_compensation.device != opacity.device:
+            raise ValueError("DropGaussian compensation must match opacity shape and device")
+        opacity = opacity * opacity_compensation
 
     # If precomputed 3d covariance is provided, use it. If not, then it will be computed from
     # scaling / rotation by the rasterizer.

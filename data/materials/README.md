@@ -31,9 +31,13 @@ SAM3 判断的是视觉与文字的匹配，不能测量真实材质或发射率
 
 三种 Probe 模式都支持材料约束：`original`、`linear_emissivity`、`learnable_linear_emissivity`。线性模型对整个配置温度区间约束 ε(T)，包括可学习斜率；固定斜率不可行时明确报错。
 
-主训练入口默认使用 `sam3_depth` 材料分区和 `learnable_linear_emissivity`，金属默认值来自当前 JSON：初值和先验中心0.30、范围0.20～0.40，沿用中心±0.10；非金属和未知类别维持原设置。其他训练设置对齐最佳完整运行 `RoadBlock_sam3_v2_20261025_134535`：关闭新增的后期衰减（`late_lr_final_factor=1.0`），保留原XYZ/网络调度、Adam、Probe及损失权重；没有把旋转组eps改成诊断中尝试的1e-8。`--phys_metal_e_init` 与 `--phys_metal_e_half_range` 仍可显式覆盖，当前对应 `--phys_metal_e_init 0.3 --phys_metal_e_half_range 0.1`。若复用余弦试验命令，删除其中的 `--late_lr_final_factor 0.1` 或改成 `--late_lr_final_factor 1.0`，避免命令行覆盖当前默认值。
+主训练入口默认使用 `sam3_depth` 材料分区和 `learnable_linear_emissivity`，金属默认值来自当前 JSON：初值和先验中心0.30、范围0.20～0.40，沿用中心±0.10；非金属和未知类别的发射率初值、先验和范围维持原设置。当前保留 B 组损失：IR 前20000轮为0.8 L1＋0.2 D-SSIM，20000轮之后再加0.2 RT；新增后期学习率衰减关闭（`late_lr_final_factor=1.0`），原XYZ/网络调度、Adam和Probe周期保留。`--phys_metal_e_init` 与 `--phys_metal_e_half_range` 仍可显式覆盖，当前对应 `--phys_metal_e_init 0.3 --phys_metal_e_half_range 0.1`。若复用余弦试验命令，删除其中的 `--late_lr_final_factor 0.1` 或改成 `--late_lr_final_factor 1.0`，避免命令行覆盖当前默认值。
+
+2026-10-28 已回退至 B 版材料 Probe：保留原有材料/深度分区内部的温度平滑（权重0.05），撤回实验图温度邻接和跨分区参考发射率平滑。SAM3 分区、发射率边界、可学习斜率、B 损失、DropGaussian、几何修正和原学习率保持。实验参数 `--phys_material_smoothing`、`--phys_material_eps_smooth_weight` 已移除；复用平滑实验命令时删除这两个参数及其值。无需重新生成SAM3掩膜。
 
 `sam3_materials_eps020_reference.json` 保留旧配置原始字节及签名。当前配置的 `mask_source_config` 仅用于兼容已生成的分割缓存：加载器要求旧配置与当前配置的标签及全部 SAM3 设置完全相同，并校验 manifest 的原配置签名。发射率拟合始终读取当前 JSON，不会从参考文件恢复旧发射率值。现有 v2 掩膜和 manifest 无需修改，也无需重新运行 SAM3。
+
+当前主训练入口还默认启用渐进式 IR DropGaussian，细节见根目录 README。上面的学习率、损失及 Probe 设置继续保留；Dropout 只用于 IR 重建渲染，Probe 和材料融合始终使用完整模型。它会通过训练后的外观和几何间接影响后续 Probe 拟合。
 
 ## 生成掩膜
 
@@ -66,7 +70,7 @@ v2 的 `pixel_threshold=0.2` 是经过实例过滤之后的最低证据阈值，
 
 每次 Probe 对当前高斯重新融合，避免增密、删除点后索引失效。默认均匀选择最多 12 个训练视角，利用 RGB 几何及实际光栅化的 alpha/透射贡献累计材料证据，至少两个视角一致才赋予材料类别。
 
-从当前 RGB 高斯渲染归一化深度，相邻像素同类且相对深度跳变不超过 3% 时连接。过滤低覆盖像素和小区域，再结合三维近邻、跨视角区域一致性建立材料区域。未知点继续使用原特征聚类和原发射率先验。不同材料/区域之间不施加温度平滑。
+从当前 RGB 高斯渲染归一化深度，相邻像素同类且相对深度跳变不超过 3% 时连接。过滤低覆盖像素和小区域，再结合三维近邻、跨视角区域一致性建立材料区域。未知点继续使用原特征聚类和原发射率先验。温度只在同一材料/深度硬分区内按原近邻规则平滑；不同硬分区之间不施加发射率平滑。
 
 深度连续是区域线索，不能保证区分接触且同深度的两个物体；材料边界也同时参与分区。`fusion` 下的阈值可以按场景调整。`material_confidence` 是融合证据强度，不是经过校准的材质概率。
 
@@ -82,7 +86,7 @@ v2 的 `pixel_threshold=0.2` 是经过实例过滤之后的最低证据阈值，
 
 ## 训练与现有检查点重拟合
 
-`--phys_material_mode sam3_depth` 是默认值：要求配置的 `sam3.mask_directory` 下有匹配的训练掩膜与 manifest；缺少掩膜时提示先运行 SAM3。`auto` 仍可显式选择，掩膜不存在时使用旧 Probe；`legacy` 显式使用原流程。已有完整掩膜时，下列命令可启动一个新实验（选择空闲 GPU 与新的输出目录）：
+`--phys_material_mode sam3_depth` 是默认值：要求配置的 `sam3.mask_directory` 下有匹配的训练掩膜与 manifest；缺少掩膜时提示先运行 SAM3。`auto` 仍可显式选择，掩膜不存在时使用旧 Probe；`--phys_material_mode legacy` 显式使用原流程。已有完整掩膜时，下列命令可启动一个新实验（选择空闲 GPU 与新的输出目录）：
 
 ```bash
 conda activate 3dgs

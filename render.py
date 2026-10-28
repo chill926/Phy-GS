@@ -779,6 +779,7 @@ def render_sets(dataset: ModelParams, iteration: int, pipeline: PipelineParams, 
             dataset.is_blender,
             dataset.is_6dof,
             time_multires=geometry_time_multires,
+            enabled=getattr(opt, "ir_geometry_mode", "learned") != "static",
         )
         geo_model.load_weights(dataset.model_path)
         rgb_geo_model = None

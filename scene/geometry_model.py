@@ -8,18 +8,26 @@ from utils.general_utils import get_expon_lr_func
 
 
 class GeoRefineModel:
-    def __init__(self, device, is_blender=False, is_6dof=False, time_multires=None):
+    def __init__(self, device, is_blender=False, is_6dof=False, time_multires=None, enabled=True):
+        self.enabled = bool(enabled)
+        if not self.enabled and is_6dof:
+            raise ValueError("Static residual ablation supports the non-SE(3) RGBT geometry branch")
         self.geometry = GeoRefineNet(
             device,
             is_blender=is_blender,
             is_6dof=is_6dof,
             time_multires=time_multires,
         ).to(device)
+        # Still construct the network in both modes to preserve initialization RNG.
+        if not self.enabled:
+            self.geometry.requires_grad_(False)
         self.optimizer = None
         self.spatial_lr_scale = 5
 
     def step(self, xyz, time, cam_pos, view_dir):
-            return self.geometry(xyz, time, cam_pos, view_dir)
+        if not self.enabled:
+            return torch.zeros_like(xyz), xyz.new_zeros((xyz.shape[0], 4)), torch.zeros_like(xyz)
+        return self.geometry(xyz, time, cam_pos, view_dir)
 
     def train_setting(self, training_args):
         l = [
