@@ -120,6 +120,10 @@ class OptimizationParams(ParamGroup):
         self.rgbt_rgb_detach_geometry = 0
         self.rgbt_save_best_eval_checkpoint = True
         self.opacity_lr = 0.05
+        # Optional per-Gaussian thermal logit offset; RGB retains base opacity.
+        self.ir_opacity_offset = False
+        self.ir_opacity_offset_lr = 0.005
+        self.ir_opacity_offset_reg_weight = 0.0001
         self.scaling_lr = 0.001
         self.rotation_lr = 0.001
         # Preserve the best full run's LR settings: no added late decay.

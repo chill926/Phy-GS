@@ -8,6 +8,35 @@ The current training defaults retain B loss (IR: 0.8 L1 + 0.2 D-SSIM through 20k
 
 Normal training uses the B configuration with the original within-region temperature smoothing (weight 0.05). The experimental graph-based temperature smoothing and cross-region reference-emissivity consistency have been reverted after full-run checks did not show a stable reconstruction benefit. SAM3 partitions, emissivity bounds, learnable slope, B loss, DropGaussian, geometry correction and optimizer schedules are retained. See [material details](data/materials/README.md).
 
+### Optional modality-specific IR opacity offset
+
+`--ir_opacity_offset` enables a zero-initialized scalar logit offset per Gaussian,
+following the opacity-decoupling formulation of [ThermoSplat](https://arxiv.org/html/2601.15897v3).
+RGB uses `sigmoid(base_logit)`; every thermal appearance/depth/evaluation render
+uses `sigmoid(base_logit + ir_offset)`. Progressive DropGaussian is applied after
+this effective opacity only for the primary IR training render. SAM3 material
+fusion retains RGB opacity. The offset learning rate is `--ir_opacity_offset_lr 0.005`;
+`--ir_opacity_offset_reg_weight 0.0001` adds a weak mean-squared logit-offset penalty
+(our adaptation, configurable to zero). The feature is off by default.
+
+Clone/split operations inherit the parent's offset and maintain its Adam state;
+opacity-based pruning retains a primitive required by either modality. Opacity
+reset caps both modalities independently at 0.01. PLY checkpoints store an optional
+`ir_opacity_offset` property; legacy PLY files keep shared opacity, and rendering
+automatically recognizes new PLY files. Resume training with the flag enabled.
+Rendering also loads geometry weights from the explicitly selected checkpoint,
+so a final-step point cloud is not mixed with the best-checkpoint geometry.
+
+For a controlled 30k run with all other settings copied from a reference:
+
+```bash
+python scripts/train_ir_opacity_ablation.py --reference output/REFERENCE --output output/NEW_BASELINE
+python scripts/train_ir_opacity_ablation.py --reference output/REFERENCE --output output/NEW_OFFSET --offset
+```
+
+Use fresh output directories. `--smoke` runs a separate 600-step lifecycle check;
+smoke metrics are not a full-run comparison. Tests: `python -m unittest discover -s tests -v`.
+
 ### Progressive IR DropGaussian
 
 The normal `train.py` entry now applies [DropGaussian](https://github.com/DCVL-3D/DropGaussian_release) to the primary IR training render from the first iteration. Each Gaussian gets an independent Bernoulli keep mask shared across its color channels. Only the temporary rasterizer opacity is multiplied by `keep / (1-p)`; stored opacity, Gaussian count and checkpoint layout are unchanged. RGB training, evaluation, Probe targets, material alpha-adjoint/depth fusion and other auxiliary renders always use the complete model. Probe fitting can still change indirectly because the learned IR appearance and geometry change.

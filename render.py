@@ -781,7 +781,7 @@ def render_sets(dataset: ModelParams, iteration: int, pipeline: PipelineParams, 
             time_multires=geometry_time_multires,
             enabled=getattr(opt, "ir_geometry_mode", "learned") != "static",
         )
-        geo_model.load_weights(dataset.model_path)
+        geo_model.load_weights(dataset.model_path, iteration=scene.loaded_iter)
         rgb_geo_model = None
         if getattr(scene, "has_rgbt", False):
             rgb_geo_model = GeoRefineModel(
@@ -790,7 +790,7 @@ def render_sets(dataset: ModelParams, iteration: int, pipeline: PipelineParams, 
                 dataset.is_6dof,
                 time_multires=geometry_time_multires,
             )
-            rgb_geo_model.load_weights(dataset.model_path, subdir="GeometryRGB")
+            rgb_geo_model.load_weights(dataset.model_path, iteration=scene.loaded_iter, subdir="GeometryRGB")
         temporal_use_view_deform = bool(getattr(dataset, "temporal_use_view_deform", False))
         temporal_tcm_model = None
         temporal_affine_model = None

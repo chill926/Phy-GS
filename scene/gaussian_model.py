@@ -47,6 +47,7 @@ class GaussianModel:
         self._scaling = torch.empty(0)
         self._rotation = torch.empty(0)
         self._opacity = torch.empty(0)
+        self._ir_opacity_offset = torch.empty(0)
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
         self.xyz_gradient_accum_abs = torch.empty(0)
@@ -126,6 +127,28 @@ class GaussianModel:
     @property
     def get_opacity(self):
         return self.opacity_activation(self._opacity)
+
+    @property
+    def has_ir_opacity_offset(self):
+        return self._ir_opacity_offset.numel() > 0
+
+    def enable_ir_opacity_offset(self):
+        if not self.has_thermal_branch:
+            raise ValueError("IR opacity offsets require an RGBT thermal branch")
+        if not self.has_ir_opacity_offset:
+            self._ir_opacity_offset = nn.Parameter(torch.zeros_like(self._opacity))
+
+    def get_opacity_for_feature(self, feature_set="rgb"):
+        if self.has_ir_opacity_offset and feature_set in ("thermal", "tir", "ir"):
+            return self.opacity_activation(self._opacity + self._ir_opacity_offset)
+        return self.get_opacity
+
+    @property
+    def get_pruning_opacity(self):
+        # Shared primitives survive while either modality still needs them.
+        if self.has_ir_opacity_offset:
+            return torch.maximum(self.get_opacity, self.get_opacity_for_feature("thermal"))
+        return self.get_opacity
 
     @property
     def get_physical_q(self):
@@ -221,9 +244,14 @@ class GaussianModel:
         self._scaling = nn.Parameter(scales.requires_grad_(True))
         self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
+        self._ir_opacity_offset = torch.empty(0, device=device)
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device=device)
 
     def training_setup(self, training_args, device):
+        if getattr(training_args, "ir_opacity_offset", False):
+            self.enable_ir_opacity_offset()
+        elif self.has_ir_opacity_offset:
+            raise ValueError("Checkpoint has IR opacity offsets; resume with --ir_opacity_offset")
         self.percent_dense = training_args.percent_dense
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device=device)
         self.xyz_gradient_accum_abs = torch.zeros((self.get_xyz.shape[0], 1), device=device)
@@ -249,13 +277,19 @@ class GaussianModel:
             l.insert(4, {'params': [self._thermal_features_rest], 'lr': thermal_lr / 20.0, "name": "thermal_rest"})
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
+        if self.has_ir_opacity_offset:
+            self.optimizer.add_param_group({
+                'params': [self._ir_opacity_offset],
+                'lr': training_args.ir_opacity_offset_lr,
+                'name': 'ir_opacity_offset',
+            })
         self.late_lr_scheduler = get_late_lr_func(
             getattr(training_args, "late_lr_start_iter", 20000),
             getattr(training_args, "late_lr_end_iter", 30000),
             getattr(training_args, "late_lr_final_factor", 1.0),
             getattr(training_args, "late_lr_schedule", "cosine"),
         )
-        selected = {"f_dc", "f_rest", "thermal_dc", "thermal_rest", "opacity", "scaling", "rotation"}
+        selected = {"f_dc", "f_rest", "thermal_dc", "thermal_rest", "opacity", "ir_opacity_offset", "scaling", "rotation"}
         self.late_lr_base = {group["name"]: group["lr"] for group in self.optimizer.param_groups
                              if group["name"] in selected}
         self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init * self.spatial_lr_scale,
@@ -292,6 +326,8 @@ class GaussianModel:
             for i in range(self._thermal_features_rest.shape[1] * self._thermal_features_rest.shape[2]):
                 l.append('t_rest_{}'.format(i))
         l.append('opacity')
+        if self.has_ir_opacity_offset:
+            l.append('ir_opacity_offset')
         for i in range(self._scaling.shape[1]):
             l.append('scale_{}'.format(i))
         for i in range(self._rotation.shape[1]):
@@ -317,7 +353,10 @@ class GaussianModel:
         dtype_full = [(attribute, 'f4') for attribute in self.construct_list_of_attributes()]
 
         elements = np.empty(xyz.shape[0], dtype=dtype_full)
-        attr_chunks.extend([opacities, scale, rotation])
+        attr_chunks.append(opacities)
+        if self.has_ir_opacity_offset:
+            attr_chunks.append(self._ir_opacity_offset.detach().cpu().numpy())
+        attr_chunks.extend([scale, rotation])
         attributes = np.concatenate(attr_chunks, axis=1)
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, 'vertex')
@@ -429,9 +468,16 @@ class GaussianModel:
         return self.load_physical_probe(path)
 
     def reset_opacity(self):
+        ir_opacities_new = None
+        if self.has_ir_opacity_offset:
+            cap = inverse_sigmoid(torch.full_like(self._opacity, 0.01))
+            ir_opacities_new = torch.minimum(self._opacity + self._ir_opacity_offset, cap)
         opacities_new = inverse_sigmoid(torch.min(self.get_opacity, torch.ones_like(self.get_opacity) * 0.01))
         optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
         self._opacity = optimizable_tensors["opacity"]
+        if ir_opacities_new is not None:
+            offsets_new = ir_opacities_new - opacities_new
+            self._ir_opacity_offset = self.replace_tensor_to_optimizer(offsets_new, "ir_opacity_offset")["ir_opacity_offset"]
 
     def load_ply(self, path, device, og_number_points=-1):
         self.og_number_points = og_number_points
@@ -493,6 +539,13 @@ class GaussianModel:
             self._thermal_features_dc = torch.empty(0, device=device)
             self._thermal_features_rest = torch.empty(0, device=device)
         self._opacity = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device=device).requires_grad_(True))
+        if "ir_opacity_offset" in plydata.elements[0].data.dtype.names:
+            if not has_saved_thermal:
+                raise ValueError("PLY IR opacity offsets require saved thermal features")
+            offsets = np.asarray(plydata.elements[0]["ir_opacity_offset"])[..., np.newaxis]
+            self._ir_opacity_offset = nn.Parameter(torch.tensor(offsets, dtype=torch.float, device=device))
+        else:
+            self._ir_opacity_offset = torch.empty(0, device=device)
         self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device=device).requires_grad_(True))
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device=device).requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device=device)
@@ -504,12 +557,13 @@ class GaussianModel:
         for group in self.optimizer.param_groups:
             if group["name"] == name:
                 stored_state = self.optimizer.state.get(group['params'][0], None)
-                stored_state["exp_avg"] = torch.zeros_like(tensor)
-                stored_state["exp_avg_sq"] = torch.zeros_like(tensor)
-
-                del self.optimizer.state[group['params'][0]]
+                if stored_state is not None:
+                    stored_state["exp_avg"] = torch.zeros_like(tensor)
+                    stored_state["exp_avg_sq"] = torch.zeros_like(tensor)
+                    del self.optimizer.state[group['params'][0]]
                 group["params"][0] = nn.Parameter(tensor.requires_grad_(True))
-                self.optimizer.state[group['params'][0]] = stored_state
+                if stored_state is not None:
+                    self.optimizer.state[group['params'][0]] = stored_state
 
                 optimizable_tensors[group["name"]] = group["params"][0]
         return optimizable_tensors
@@ -543,6 +597,8 @@ class GaussianModel:
             self._thermal_features_dc = optimizable_tensors["thermal_dc"]
             self._thermal_features_rest = optimizable_tensors["thermal_rest"]
         self._opacity = optimizable_tensors["opacity"]
+        if "ir_opacity_offset" in optimizable_tensors:
+            self._ir_opacity_offset = optimizable_tensors["ir_opacity_offset"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
@@ -579,7 +635,8 @@ class GaussianModel:
         return optimizable_tensors
 
     def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling,
-                              new_rotation, device, new_thermal_features_dc=None, new_thermal_features_rest=None):
+                              new_rotation, device, new_thermal_features_dc=None, new_thermal_features_rest=None,
+                              new_ir_opacity_offset=None):
         d = {"xyz": new_xyz,
              "f_dc": new_features_dc,
              "f_rest": new_features_rest,
@@ -589,6 +646,10 @@ class GaussianModel:
         if self.has_thermal_branch:
             d["thermal_dc"] = new_thermal_features_dc
             d["thermal_rest"] = new_thermal_features_rest
+        if self.has_ir_opacity_offset:
+            if new_ir_opacity_offset is None:
+                raise ValueError("Densified Gaussians must inherit their parent's IR opacity offset")
+            d["ir_opacity_offset"] = new_ir_opacity_offset
 
         optimizable_tensors = self.cat_tensors_to_optimizer(d)
         self._xyz = optimizable_tensors["xyz"]
@@ -598,6 +659,8 @@ class GaussianModel:
             self._thermal_features_dc = optimizable_tensors["thermal_dc"]
             self._thermal_features_rest = optimizable_tensors["thermal_rest"]
         self._opacity = optimizable_tensors["opacity"]
+        if "ir_opacity_offset" in optimizable_tensors:
+            self._ir_opacity_offset = optimizable_tensors["ir_opacity_offset"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
@@ -662,9 +725,10 @@ class GaussianModel:
         new_thermal_features_dc = self._thermal_features_dc[selected_pts_mask].repeat(N, 1, 1) if self.has_thermal_branch else None
         new_thermal_features_rest = self._thermal_features_rest[selected_pts_mask].repeat(N, 1, 1) if self.has_thermal_branch else None
         new_opacity = self._opacity[selected_pts_mask].repeat(N, 1)
+        new_ir_offset = self._ir_opacity_offset[selected_pts_mask].repeat(N, 1) if self.has_ir_opacity_offset else None
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation,
-                                   device, new_thermal_features_dc, new_thermal_features_rest)
+                                   device, new_thermal_features_dc, new_thermal_features_rest, new_ir_offset)
 
         prune_filter = torch.cat(
             (selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device=device, dtype=bool)))
@@ -714,6 +778,7 @@ class GaussianModel:
         new_thermal_features_rest = self._thermal_features_rest[selected_pts_mask] if self.has_thermal_branch else None
         
         new_opacities = self._opacity[selected_pts_mask]
+        new_ir_offset = self._ir_opacity_offset[selected_pts_mask] if self.has_ir_opacity_offset else None
         # original_opacities = self._opacity[selected_pts_mask]
 
         # # new_opacities = 1 - torch.sqrt(1 - self.opacity_activation(original_opacities))
@@ -738,7 +803,7 @@ class GaussianModel:
         # self._opacity[selected_pts_mask] = new_opacities
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling,
-                                   new_rotation, device, new_thermal_features_dc, new_thermal_features_rest)
+                                   new_rotation, device, new_thermal_features_dc, new_thermal_features_rest, new_ir_offset)
         return {
             "candidates": candidate_count,
             "selected": selected_count,
@@ -843,7 +908,7 @@ class GaussianModel:
             grad_mean.detach().reshape(-1).abs(),
             grad_abs.detach().reshape(-1).abs(),
         )
-        opacity = self.get_opacity.detach().reshape(-1)
+        opacity = self.get_pruning_opacity.detach().reshape(-1)
         radii = self.max_radii2D.detach().reshape(-1).float()
         scale = self.get_scaling.detach().max(dim=1).values
 
@@ -1018,7 +1083,7 @@ class GaussianModel:
             cloned = after_clone - before
             split_added = after_split - after_clone
 
-        prune_mask = (self.get_opacity < min_opacity).squeeze()
+        prune_mask = (self.get_pruning_opacity < min_opacity).reshape(-1)
         if max_screen_size:
             big_points_vs = self.max_radii2D > max_screen_size
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent

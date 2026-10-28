@@ -97,7 +97,9 @@ def render(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Tensor, d_
     else:
         d_xyz_render = d_xyz.detach() if detach_geometry and torch.is_tensor(d_xyz) else d_xyz
         means3D = base_xyz + d_xyz_render
-    opacity = pc.get_opacity.detach() if detach_geometry else pc.get_opacity
+    opacity = pc.get_opacity_for_feature(feature_set)
+    if detach_geometry:
+        opacity = opacity.detach()
     if float(opacity_threshold) > 0.0:
         opacity = torch.where(opacity >= float(opacity_threshold), opacity, torch.zeros_like(opacity))
     if opacity_compensation is not None:
@@ -236,7 +238,9 @@ def render_depth_acc(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.
         d_xyz_render = d_xyz.detach() if detach_geometry and torch.is_tensor(d_xyz) else d_xyz
         means3D = base_xyz + d_xyz_render
 
-    opacity = pc.get_opacity.detach() if detach_geometry else pc.get_opacity
+    opacity = pc.get_opacity_for_feature(feature_set)
+    if detach_geometry:
+        opacity = opacity.detach()
     if pipe.compute_cov3D_python:
         cov3D_precomp = pc.get_covariance(scaling_modifier)
         if detach_geometry:

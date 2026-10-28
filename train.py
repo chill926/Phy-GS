@@ -407,7 +407,7 @@ def compute_geo_fields(viewpoint_cam, gaussians, geo_model, pipe, background,
             means2D_densify=screenspace_points_densify,
             shs=shs,
             colors_precomp=None,
-            opacities=gaussians.get_opacity,
+            opacities=gaussians.get_opacity_for_feature(feature_set),
             scales=gaussians.get_scaling,
             rotations=gaussians.get_rotation,
             cov3D_precomp=None
@@ -567,6 +567,10 @@ def quantize_like_save_image(image):
 
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, device):
+    for name in ("ir_opacity_offset_lr", "ir_opacity_offset_reg_weight"):
+        value = float(getattr(opt, name))
+        if not math.isfinite(value) or value < 0.0:
+            raise ValueError(name + " must be finite and nonnegative")
     ir_geometry_mode = getattr(opt, "ir_geometry_mode", "learned")
     if ir_geometry_mode not in ("learned", "static"):
         raise ValueError("ir_geometry_mode must be learned or static")
@@ -607,6 +611,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, device):
         load_iteration=requested_load_iteration if requested_load_iteration != 0 else None,
     )
     gaussians.training_setup(opt, device)
+    print("[IR_OPACITY_OFFSET] enabled={} lr={} L2_weight={}".format(
+        gaussians.has_ir_opacity_offset, opt.ir_opacity_offset_lr, opt.ir_opacity_offset_reg_weight))
     start_iteration = int(scene.loaded_iter or 0)
     checkpoint_model_path = getattr(dataset, "load_model_path", "") or model_path
     if start_iteration > 0:
@@ -994,7 +1000,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, device):
                 )
                 screenspace_points = torch.zeros_like(gaussians.get_xyz, dtype=gaussians.get_xyz.dtype, device=device)
                 screenspace_points_densify = torch.zeros_like(gaussians.get_xyz, dtype=gaussians.get_xyz.dtype, device=device)
-                opacity = gaussians.get_opacity
+                opacity = gaussians.get_opacity_for_feature("thermal" if has_rgbt else "rgb")
                 scales = gaussians.get_scaling
                 rotations = gaussians.get_rotation
                 shs = gaussians.get_thermal_features if has_rgbt else gaussians.get_features
@@ -1361,6 +1367,25 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, device):
             )
             loss = loss + physics_aux_loss
         
+        if gaussians.has_ir_opacity_offset:
+            opacity_offset_reg = gaussians._ir_opacity_offset.square().mean()
+            loss = loss + opt.ir_opacity_offset_reg_weight * opacity_offset_reg
+            if iteration == start_iteration + 1 or iteration % 1000 == 0 or iteration == opt.iterations:
+                with torch.no_grad():
+                    offset = gaussians._ir_opacity_offset
+                    opacity_delta = gaussians.get_opacity_for_feature("thermal") - gaussians.get_opacity
+                    row = {"iteration": iteration, "points": offset.shape[0],
+                           "offset_mean": offset.mean().item(), "offset_abs_mean": offset.abs().mean().item(),
+                           "offset_abs_max": offset.abs().max().item(),
+                           "opacity_delta_abs_mean": opacity_delta.abs().mean().item(),
+                           "regularizer": opacity_offset_reg.item()}
+                with open(os.path.join(model_path, "ir_opacity_offset.jsonl"), "a") as stream:
+                    stream.write(json.dumps(row) + "\n")
+                if tb_writer:
+                    for name, value in row.items():
+                        if name != "iteration":
+                            tb_writer.add_scalar("ir_opacity_offset/" + name, value, iteration)
+                print("[IR_OPACITY_OFFSET] " + json.dumps(row))
         loss.backward()
 
         iter_end.record()
