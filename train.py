@@ -42,6 +42,8 @@ from scene import (
 )
 from utils.general_utils import safe_state, get_linear_noise_func
 from utils.dropgaussian import ProgressiveIRDropGaussian
+from utils.path_atmosphere import PathAtmosphere
+from utils.full_sh_probe import configure_full_sh_probe, run_full_sh_probe, MODES as FULL_SH_PROBE_MODES, ATTRIBUTE_MODE
 from tqdm import tqdm
 from utils.image_utils import psnr
 from utils.radiative_utils import (
@@ -567,6 +569,22 @@ def quantize_like_save_image(image):
 
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, device):
+    # Apply before writing cfg_args so saved settings match actual loss gates.
+    configure_full_sh_probe(opt)
+    from utils.attribute_feedback import enabled as attribute_feedback_enabled, validate as validate_attribute_feedback
+    validate_attribute_feedback(dataset, opt)
+    if opt.phys_probe_mode == ATTRIBUTE_MODE:
+        from utils.attribute_probe_pipeline import validate_attribute_inputs
+        validate_attribute_inputs(dataset, opt)
+    _training_loop(dataset, opt, pipe, testing_iterations, saving_iterations, device)
+    # The loop frame (including live source model/Adam tensors) must be gone
+    # before loading the frozen checkpoint for the tested independent readout.
+    if opt.phys_probe_mode == ATTRIBUTE_MODE and not attribute_feedback_enabled(opt):
+        from utils.attribute_probe_pipeline import fit_final_attributes
+        fit_final_attributes(dataset.model_path, opt)
+
+
+def _training_loop(dataset, opt, pipe, testing_iterations, saving_iterations, device):
     ir_geometry_mode = getattr(opt, "ir_geometry_mode", "learned")
     if ir_geometry_mode not in ("learned", "static"):
         raise ValueError("ir_geometry_mode must be learned or static")
@@ -607,6 +625,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, device):
         load_iteration=requested_load_iteration if requested_load_iteration != 0 else None,
     )
     gaussians.training_setup(opt, device)
+    if opt.phys_probe_mode in FULL_SH_PROBE_MODES:
+        # A resumed legacy checkpoint can carry stale DC-derived temperatures.
+        # The new observation cache deliberately has a separate schema/path.
+        gaussians.clear_radiative_transfer_attributes()
     start_iteration = int(scene.loaded_iter or 0)
     checkpoint_model_path = getattr(dataset, "load_model_path", "") or model_path
     if start_iteration > 0:
@@ -622,6 +644,17 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, device):
         atmos_model.load_weights(checkpoint_model_path, iteration=start_iteration)
         planck_model.load_weights(checkpoint_model_path, iteration=start_iteration)
         radiometric_model.load_weights(checkpoint_model_path, iteration=start_iteration)
+    path_atmosphere = None
+    if getattr(opt, "ir_atmosphere", False):
+        if not getattr(scene, "has_rgbt", False):
+            raise ValueError("This atmosphere experiment currently supports the paired RGBT branch")
+        if opt.phys_main_render or opt.ir_temporal_affine or opt.ir_temporal_pose:
+            raise ValueError("Atmosphere ablation requires SH source and no temporal affine/pose correction")
+        path_atmosphere = PathAtmosphere(opt)
+        gaussians.path_atmosphere = path_atmosphere
+        if start_iteration > 0:
+            path_atmosphere.load(checkpoint_model_path, start_iteration)
+        print("[PathAtmosphere] initial mu=0; train-view profile Probe; image-proxy domain")
     has_rgbt = getattr(scene, "has_rgbt", False)
     rgb_geo_model = None
     if has_rgbt:
@@ -815,6 +848,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, device):
         )
     )
 
+    from utils.attribute_feedback import AttributeFeedback, enabled as attribute_feedback_enabled
+    live_feedback = AttributeFeedback(dataset, opt, model_path) if attribute_feedback_enabled(opt) else None
+
     def save_training_state(iteration_to_save):
         scene.save(iteration_to_save)
         geo_model.save_weights(model_path, iteration_to_save)
@@ -827,6 +863,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, device):
             temporal_affine_model.save_weights(model_path, iteration_to_save)
         if temporal_pose_model is not None:
             temporal_pose_model.save_weights(model_path, iteration_to_save)
+
+        if path_atmosphere is not None:
+            path_atmosphere.save(model_path, iteration_to_save)
+        if live_feedback is not None:
+            live_feedback.save(iteration_to_save)
 
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32).to(device)
@@ -868,8 +909,26 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, device):
                                       pipe, background, opt, probe_iteration, smooth_term, probe_time_interval,
                                       device, dataset.is_blender, feature_set="rgb", eval_mode=True)
         context = {"pipeline": pipe, "deformation": material_deformation, "is_6dof": dataset.is_6dof}
+        if opt.phys_probe_mode in FULL_SH_PROBE_MODES:
+            def ir_deformation(view):
+                return compute_geo_fields(view, gaussians, geo_model, pipe, background, opt,
+                                          probe_iteration, smooth_term, probe_time_interval, device,
+                                          dataset.is_blender, feature_set="thermal", eval_mode=True)
+            ir_context = {"pipeline": pipe, "deformation": ir_deformation,
+                          "is_6dof": dataset.is_6dof, "background": background}
+            return run_full_sh_probe(probe_iteration, gaussians, scene, opt, model_path,
+                                     ir_context, material_context=context)
         fit_and_log_physir_attributes(probe_iteration, gaussians, scene, opt, model_path,
                                      prev_probe_point_count, material_context=context)
+
+    def run_atmosphere_probe(probe_iteration):
+        def ir_deformation(view):
+            return compute_geo_fields(view, gaussians, geo_model, pipe, background, opt,
+                                      probe_iteration, lambda _: 0., fixed_time_interval or 1.,
+                                      device, dataset.is_blender, feature_set="thermal",
+                                      eval_mode=True, respect_warmup=True)
+        path_atmosphere.probe(gaussians, scene, pipe, background, ir_deformation,
+                              dataset.is_6dof, model_path)
 
     models = {"gaussians": gaussians, "geometry": geo_model, "geometry_rgb": rgb_geo_model,
               "atmos": atmos_model, "planck": planck_model, "radiometric": radiometric_model}
@@ -920,12 +979,18 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, device):
             save_training_state(start_iteration)
         if initial_psnr is not None and has_rgbt and getattr(opt, "rgbt_save_best_eval_checkpoint", False):
             save_training_state(int(opt.iterations) + 1)
+    if live_feedback is not None and start_iteration == live_feedback.start:
+        interval = 1.0 / max(len(train_cameras), 1) if fixed_time_interval is None else fixed_time_interval * opt.temporal_jitter_scale
+        run_material_probe(start_iteration, interval)
+        save_training_state(start_iteration)
     print("[DropGaussian] IR training only; linear p=0 -> {:.3f} over {} iterations; "
           "seed={}; RGB/eval/Probe/material renders use the full model".format(
               ir_dropgaussian.max_rate, opt.iterations, ir_dropgaussian.seed))
     log_learning_rates(start_iteration, gaussians.update_late_learning_rates(start_iteration))
     for iteration in range(start_iteration + 1, opt.iterations + 1):
         iter_start.record()
+        if path_atmosphere is not None:
+            path_atmosphere.iteration = iteration
         # Set only the added schedule before this iteration's update; retain
         # the original XYZ/network scheduler update order.
         late_factor = gaussians.update_late_learning_rates(iteration)
@@ -1361,6 +1426,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, device):
             )
             loss = loss + physics_aux_loss
         
+        if live_feedback is not None:
+            loss = loss + live_feedback.loss(iteration, viewpoint_cam, gaussians, scene,
+                geo_model, pipe, background, image, gt_image,
+                (d_xyz_full, d_rotation_full, d_scaling_full))
         loss.backward()
 
         iter_end.record()
@@ -1586,6 +1655,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, device):
             gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter],
                                                                  radii[visibility_filter])
 
+            # Probe reads TRAIN views only and runs before evaluation/checkpointing.
+            if (path_atmosphere is not None and iteration < opt.iterations
+                    and iteration >= opt.ir_atmosphere_start_iter
+                    and (iteration - opt.ir_atmosphere_start_iter) % opt.ir_atmosphere_probe_every == 0):
+                run_atmosphere_probe(iteration)
+
             # Log and save
             cur_psnr = training_report(dataset.source_path, model_path, tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end),
                                        testing_iterations, scene, render, (pipe, background), geo_model,
@@ -1609,14 +1684,17 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, device):
                         )
                         save_training_state(best_mirror_iteration)
 
-            if opt.phys_probe_every > 0 and iteration % opt.phys_probe_every == 0:
+            if ((opt.phys_probe_every > 0 and iteration % opt.phys_probe_every == 0)
+                    or (opt.phys_probe_mode == ATTRIBUTE_MODE and iteration == opt.iterations)):
                 run_material_probe(iteration, time_interval)
                 prev_probe_point_count = gaussians.get_xyz.shape[0]
                 # Detailed radiative guidance and auxiliary-loss diagnostics are
                 # intentionally kept out of the console/result.txt logs. Full
                 # PhysIR statistics are still stored in phys_probe/probe_log.jsonl.
 
-            if iteration in saving_iterations:
+            if (iteration in saving_iterations
+                    or (live_feedback is not None and iteration == live_feedback.start)
+                    or (opt.phys_probe_mode == ATTRIBUTE_MODE and iteration == opt.iterations)):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 save_training_state(iteration)
 
@@ -1819,6 +1897,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, device):
                 planck_model.update_learning_rate(iteration)
                 radiometric_model.update_learning_rate(iteration)
 
+    if live_feedback is not None:
+        live_feedback.close()
     print("Best PSNR = {} in Iteration {}".format(best_psnr, best_iteration))
 
     final_num_gaussians = scene.gaussians.get_xyz.shape[0]

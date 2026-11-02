@@ -230,8 +230,35 @@ class OptimizationParams(ParamGroup):
         self.densify_residual_weight_start_iter = 3000
         self.densify_residual_weight_blur = 1
         self.densify_residual_weight_split_only = False
-        # Default to the learned-slope material setup; explicit original/linear modes remain available.
-        self.phys_probe_mode = "learnable_linear_emissivity"
+        # Optional scene-wide IR path attenuation; standard training stays unchanged.
+        self.ir_atmosphere = False
+        self.ir_atmosphere_start_iter = 5000
+        self.ir_atmosphere_probe_every = 1000
+        self.ir_atmosphere_probe_views = 12
+        self.ir_atmosphere_probe_points = 4096
+        self.ir_atmosphere_probe_scale = 2
+        self.ir_atmosphere_min_tracks = 64
+        self.ir_atmosphere_min_acc = 0.95
+        self.ir_atmosphere_min_distance_span = 0.02
+        self.ir_atmosphere_min_gain = 0.001
+        self.ir_atmosphere_max_beta = 0.3
+        self.ir_atmosphere_ramp_iters = 1000
+        self.ir_atmosphere_air = -1.0
+        self.ir_atmosphere_air_quantile = 0.1
+        self.phys_probe_mode = "full_sh_radiometric_attributes"
+        # With aux weight > 0, attributes learn online after phys_aux_start_iter;
+        # the independent/no-feedback fit uses the budget below.
+        self.phys_attribute_mapping = "output/dn_display_mapping/RoadBlock_20261021_195046/monotone_colorize_then_resize/mapping.json"
+        self.phys_attribute_steps = 1024
+        self.phys_attribute_views_per_step = 4
+        self.phys_attribute_eval_every = 128
+        self.phys_attribute_log_every = 32
+        self.phys_attribute_sh_pixels = 4096
+        self.phys_attribute_slope_start_fraction = 0.75
+        # Detached full-SH inputs, prior to any DN/temperature calibration.
+        self.phys_probe_sh_views = 0  # 0 = all train cameras, never test cameras.
+        self.phys_probe_sh_min_acc = 0.98
+        self.phys_probe_sh_reference_tolerance = 2e-5
         # Runtime fit override; leaves SAM3 mask/config hashes unchanged.
         self.phys_metal_e_init = -1.0
         self.phys_metal_e_half_range = -1.0

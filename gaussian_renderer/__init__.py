@@ -14,6 +14,7 @@ import math
 from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
 from scene.gaussian_model import GaussianModel
 from utils.sh_utils import SH2RGB, eval_sh
+from utils.path_atmosphere import apply_atmosphere, range_from_depth
 from utils.rigid_utils import from_homogenous, to_homogenous
 import math
 
@@ -42,7 +43,8 @@ def quaternion_multiply(q1, q2):
 def render(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Tensor, d_xyz, d_rotation, d_scaling, device, is_6dof=False,
            scaling_modifier=1.0, override_color=None, scale_factor=1, radiative_color=None, radiative_blend=0.0,
            physical_color=None, physical_blend=0.0, feature_set="rgb", detach_geometry=False,
-           opacity_threshold=0.0, opacity_compensation=None):
+           opacity_threshold=0.0, opacity_compensation=None,
+           atmosphere_aux=False, disable_atmosphere=False):
     """
     Render the scene.
 
@@ -170,6 +172,34 @@ def render(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Tensor, d_
         rotations=rotations,
         cov3D_precomp=cov3D_precomp)
     
+    path_atmosphere = getattr(pc, "path_atmosphere", None)
+    use_atmosphere = (not disable_atmosphere and path_atmosphere is not None
+                      and feature_set in ("thermal", "tir", "ir")
+                      and override_color is None and path_atmosphere.mu > 0)
+    atmosphere_fields = {}
+    if atmosphere_aux or use_atmosphere:
+        # Same CUDA renderer, geometry, opacity and DropGaussian realization.
+        # One-valued splats on black yield coverage, including partial coverage.
+        with torch.no_grad():
+            aux_rasterizer = GaussianRasterizer(raster_settings=raster_settings._replace(bg=torch.zeros_like(bg_color)))
+            def detached(t):
+                return t.detach() if torch.is_tensor(t) else t
+            coverage_rgb, _, _ = aux_rasterizer(
+                means3D=means3D.detach(), means2D=screenspace_points.detach(),
+                means2D_densify=screenspace_points_densify.detach(), shs=None,
+                colors_precomp=torch.ones_like(means3D), opacities=opacity.detach(),
+                scales=detached(scales), rotations=detached(rotations),
+                cov3D_precomp=detached(cov3D_precomp))
+            acc = coverage_rgb[:1].clamp(0, 1)
+            if depth.dim() == 2:
+                depth = depth.unsqueeze(0)
+            distance = range_from_depth(depth, acc, viewpoint_camera.FoVx, viewpoint_camera.FoVy)
+        atmosphere_fields = {"acc": acc, "distance": distance}
+        if use_atmosphere:
+            rendered_image = apply_atmosphere(rendered_image, depth, acc, bg_color,
+                                             viewpoint_camera.FoVx, viewpoint_camera.FoVy,
+                                             path_atmosphere.mu, path_atmosphere.air)
+
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
     return {"render": rendered_image,
@@ -177,7 +207,7 @@ def render(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Tensor, d_
             "viewspace_points_densify": screenspace_points_densify,
             "visibility_filter": radii > 0,
             "radii": radii,
-            "depth": depth}
+            "depth": depth, **atmosphere_fields}
 
 
 def render_depth_acc(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Tensor,

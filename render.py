@@ -41,8 +41,9 @@ except ImportError:
     ThermalCorrectionModel = None
 
 
-def render_and_save_physical_fields(*_args, **_kwargs):
-    raise RuntimeError("physical_fields mode is unavailable in this branch.")
+def render_and_save_physical_fields(*args, **kwargs):
+    from utils.attribute_probe_pipeline import render_attribute_fields
+    return render_attribute_fields(*args, **kwargs)
 
 
 def _is_temporal_thermal_render(gaussians, view=None):
@@ -771,6 +772,11 @@ def render_sets(dataset: ModelParams, iteration: int, pipeline: PipelineParams, 
             )
             dataset.load_model_path = ""
         scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
+        if getattr(opt, "ir_atmosphere", False):
+            from utils.path_atmosphere import PathAtmosphere
+            gaussians.path_atmosphere = PathAtmosphere(opt)
+            gaussians.path_atmosphere.load(dataset.model_path, scene.loaded_iter)
+            print(f"[PathAtmosphere] loaded mu={gaussians.path_atmosphere.mu:.8g}")
         geometry_time_multires = None
         if opt is not None and getattr(opt, "geometry_time_multires", -1) >= 0:
             geometry_time_multires = opt.geometry_time_multires
@@ -781,7 +787,7 @@ def render_sets(dataset: ModelParams, iteration: int, pipeline: PipelineParams, 
             time_multires=geometry_time_multires,
             enabled=getattr(opt, "ir_geometry_mode", "learned") != "static",
         )
-        geo_model.load_weights(dataset.model_path)
+        geo_model.load_weights(dataset.model_path, iteration=scene.loaded_iter)
         rgb_geo_model = None
         if getattr(scene, "has_rgbt", False):
             rgb_geo_model = GeoRefineModel(
@@ -790,7 +796,7 @@ def render_sets(dataset: ModelParams, iteration: int, pipeline: PipelineParams, 
                 dataset.is_6dof,
                 time_multires=geometry_time_multires,
             )
-            rgb_geo_model.load_weights(dataset.model_path, subdir="GeometryRGB")
+            rgb_geo_model.load_weights(dataset.model_path, iteration=scene.loaded_iter, subdir="GeometryRGB")
         temporal_use_view_deform = bool(getattr(dataset, "temporal_use_view_deform", False))
         temporal_tcm_model = None
         temporal_affine_model = None
@@ -878,6 +884,11 @@ def render_sets(dataset: ModelParams, iteration: int, pipeline: PipelineParams, 
                 device,
                 dataset.is_6dof,
                 dataset.load2gpu_on_the_fly,
+                rgb_geo_model=rgb_geo_model,
+                skip_train=skip_train,
+                skip_test=skip_test,
+                background=background,
+                is_blender=dataset.is_blender,
             )
             return {
                 "mode": mode,
@@ -974,7 +985,12 @@ if __name__ == "__main__":
     parser.add_argument("--rgbt_allow_logged_checkpoint_selection", action="store_true")
     parser.add_argument("--rgbt_best_checkpoint_iteration", type=int, default=30001)
     args = get_combined_args(parser, device)
-    selected_rgbt_iter = _select_rgbt_best_checkpoint(args)
+    if args.mode == "physical_fields":
+        from utils.attribute_probe_pipeline import select_attribute_iteration
+        args.iteration = select_attribute_iteration(args.model_path, args.iteration)
+        selected_rgbt_iter = None
+    else:
+        selected_rgbt_iter = _select_rgbt_best_checkpoint(args)
     if selected_rgbt_iter is not None:
         args.iteration = int(selected_rgbt_iter)
     print("Rendering " + args.model_path)
