@@ -1401,7 +1401,7 @@ def _training_loop(dataset, opt, pipe, testing_iterations, saving_iterations, de
             )
             loss = loss + geometry_smooth_weight * geo_smooth_reg
 
-        if tir_auxiliary_gate(iteration, opt) > 0.0 and gaussians.has_radiative_transfer_attributes():
+        if live_feedback is None and tir_auxiliary_gate(iteration, opt) > 0.0 and gaussians.has_radiative_transfer_attributes():
             with torch.no_grad():
                 confidence_color = radiative_confidence_values(gaussians, opt).repeat(1, 3).contiguous()
                 confidence_image = torch.clamp(

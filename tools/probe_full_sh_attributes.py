@@ -31,7 +31,8 @@ from utils.probe_dn_utils import (CameraResponse, ShuffledViews, evenly, frozen_
 from utils.emissivity_models import endpoint_emissivity_parameters
 
 TEMPERATURE_VARIANT = 'learn_eps_temperature_directional'
-VARIANTS = ('fixed_eps_static', 'learn_eps_static', 'learn_eps_directional', TEMPERATURE_VARIANT)
+BASE_VARIANTS = ('fixed_eps_static', 'learn_eps_static', 'learn_eps_directional')
+VARIANTS = BASE_VARIANTS+(TEMPERATURE_VARIANT,)
 SOURCE_PARAMETERS = ('_xyz', '_features_dc', '_features_rest', '_thermal_features_dc',
                      '_thermal_features_rest', '_scaling', '_rotation', '_opacity')
 
@@ -42,7 +43,7 @@ def options(argv=None):
     p.add_argument('--iteration', type=int, default=30000)
     p.add_argument('--mapping', default='output/dn_display_mapping/RoadBlock_20261021_195046/monotone_colorize_then_resize/mapping.json')
     p.add_argument('--output', default='')
-    p.add_argument('--variants', nargs='+', choices=VARIANTS, default=list(VARIANTS))
+    p.add_argument('--variants', nargs='+', choices=VARIANTS, default=list(BASE_VARIANTS))
     p.add_argument('--steps', type=int, default=1024, help='Adam updates per variant, not 3DGS iterations')
     p.add_argument('--views-per-step', type=int, default=4)
     p.add_argument('--fit-views', type=int, default=0, help='0=all 49 predefined fit views')
@@ -235,7 +236,7 @@ def main(argv=None, *, prepare_only=False):
         assets.extend(sorted((ROOT/folder).rglob('*.py')))
     assets.extend([ROOT/'train.py', ROOT/'render.py'])
     before = {str(p): sha(p) for p in assets}
-    from tools.fit_flir_display_mapping import extract_flir, load_model
+    from tools.fit_flir_display_mapping import extract_flir, load_model, palette_rgb
     roles = dict(fit=evenly(sorted(document['fit_frames']), o.fit_views),
                  validation=evenly(sorted(document['validation_frames']), o.max_eval_views),
                  test=evenly(sorted(p.stem for p in (scene_path/'thermal/test').glob('*.jpg')), o.max_eval_views))
@@ -248,15 +249,19 @@ def main(argv=None, *, prepare_only=False):
             dn, palette, meta = extract_flir(raw, document['png_byte_order'])
             if response is None:
                 response = CameraResponse(meta['planck'])
-            if meta['planck'] != response.c or not np.array_equal(palette, np.asarray(document['palette_ycrcb'], dtype=np.uint8)):
-                raise ValueError('Camera response/palette mismatch: '+name)
+            if meta['planck'] != response.c:
+                raise ValueError('Camera response mismatch: '+name)
+            if (document.get('palette_mode') != 'known_per_frame_FLIR_metadata'
+                    and not np.array_equal(palette, np.asarray(document['palette_ycrcb'], dtype=np.uint8))):
+                raise ValueError('Legacy shared-palette mapping mismatch: '+name)
             for branch in ('thermal', 'rgb'):
                 path = scene_path/branch/('test' if role == 'test' else 'train')/(name+'.jpg')
                 before[str(path)] = sha(path)
                 if Image.open(path).size != (640, 480):
                     raise ValueError('Frozen mapping requires 640x480 images')
             before[str(raw)] = sha(raw)
-            targets[name] = dict(dn=dn, signal=dn.astype(np.float32)+response.c['O'], role=role, meta=meta)
+            targets[name] = dict(dn=dn, signal=dn.astype(np.float32)+response.c['O'], role=role, meta=meta,
+                                 display_palette=palette_rgb(palette))
     shapes = {t['dn'].shape for t in targets.values()}
     if len(shapes) != 1:
         raise ValueError('Mixed raw grid shapes')
@@ -384,7 +389,8 @@ def main(argv=None, *, prepare_only=False):
             target_signal = torch.tensor(target['signal'], device=device)
             frame.update(acc=acc, valid=valid, metal_core=core, target=target_signal,
                          directions=direction, xy=xy, sample_indices=sample_indices,
-                         display_valid=display_valid, teacher=teacher)
+                         display_valid=display_valid, teacher=teacher,
+                         display_palette=torch.tensor(target['display_palette'],dtype=torch.float32,device=device))
             frames[name] = frame
             print('[PREPARE] {} {} opaque={} metal={} display={}'.format(
                 target['role'], name, int(valid.sum()), int(core.sum()), int(display_valid.sum())), flush=True)
@@ -457,7 +463,7 @@ def main(argv=None, *, prepare_only=False):
         from types import SimpleNamespace
         # Return only detached observations and field variables. The temporary
         # Gaussian/geometry models and their render closures are not retained.
-        keep = ('target', 'meta', 'xy', 'sample_indices', 'display_valid', 'teacher')
+        keep = ('target', 'meta', 'xy', 'sample_indices', 'display_valid', 'teacher', 'display_palette')
         fit_frames = {name:{key:frames[name][key] for key in keep} for name in roles['fit']}
         problem = SimpleNamespace(field=create_field(), options=o, frames=fit_frames,
             roles=roles, grid=grid.detach(), fov=fov.detach(), labels=labels.detach(),
@@ -481,7 +487,7 @@ def main(argv=None, *, prepare_only=False):
     def display_prediction(q, frame):
         dn = q-response.c['O']
         normalized = (dn-frame['meta']['median'])/frame['meta']['span']+.5
-        return display(normalized[None], frame['xy'], (480, 640))[0]
+        return display(normalized[None], frame['xy'], (480, 640),palette=frame.get('display_palette'))[0]
 
     def data_terms(field, frame, variant, step):
         values = field.values(variant, step)
@@ -579,6 +585,8 @@ def main(argv=None, *, prepare_only=False):
                     raise FloatingPointError('Nonfinite attribute data loss')
                 (loss/len(names)).backward()
                 components += np.asarray([float(v.detach()) for v in parts])/len(names)
+            slope_data_norm = (float(field.slope_raw.grad[field.active_regions].norm())
+                               if field.slope_raw.grad is not None else 0.)
             prior = field.prior(field.values(variant, step), variant, step)
             prior.backward()
             if field.temperature_raw.grad is None:
@@ -594,6 +602,7 @@ def main(argv=None, *, prepare_only=False):
             gradient = dict(temperature=float(field.temperature_raw.grad.norm()),
                             emissivity=float(field.epsilon_raw.grad.norm()) if field.epsilon_raw.grad is not None else 0.,
                             slope=float(field.slope_raw.grad.norm()) if field.slope_raw.grad is not None else 0.,
+                            slope_data=slope_data_norm,
                             direction=float(field.direction_raw.grad.norm()) if field.direction_raw.grad is not None else 0.)
             optimizer.step()
             row = dict(step=step, views=names, DN_Huber=components[0], metal_Huber=components[1],
@@ -779,7 +788,7 @@ def export_previews(folder, field, variant, step, roles, frames, o, g, pipe, rgb
         y, x = torch.meshgrid(torch.arange(480, device=prediction.device), torch.arange(640, device=prediction.device), indexing='ij')
         xy = torch.stack([2*(x.flatten()+.5)/640-1, 2*(y.flatten()+.5)/480-1], dim=-1)[None]
         normalized = ((prediction-response.c['O'])-frame['meta']['median'])/frame['meta']['span']+.5
-        mapped = torch.cat([display(normalized[None], xy[:, start:start+32768], (480, 640))[0]
+        mapped = torch.cat([display(normalized[None], xy[:, start:start+32768], (480, 640),palette=frame.get('display_palette'))[0]
                             for start in range(0, 640*480, 32768)]).reshape(480, 640, 3).cpu().numpy()
         fig, axes = plt.subplots(1, 3, figsize=(13, 4), layout='constrained')
         for ax, data, title in zip(axes, [as_rgb(view.original_image), as_rgb(ir), mapped],

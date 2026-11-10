@@ -33,11 +33,11 @@ def _arguments(model, iteration, opt):
               '--mapping', str((ROOT/opt.phys_attribute_mapping).resolve()),
               '--steps', str(opt.phys_attribute_steps),
               '--views-per-step', str(opt.phys_attribute_views_per_step),
+              '--emissivity-lr', str(getattr(opt, 'phys_attribute_emissivity_lr', .003)),
               '--eval-every', str(opt.phys_attribute_eval_every),
               '--log-every', str(opt.phys_attribute_log_every),
-              '--temp-min', str(opt.phys_probe_temp_min), '--temp-max', str(opt.phys_probe_temp_max),
               '--temperature-ref', str(opt.phys_probe_temp_ref),
-              '--slope-start-fraction', str(getattr(opt, 'phys_attribute_slope_start_fraction', .75)),
+              '--slope-start-fraction', '.75',
               '--slope-lr-scale', str(opt.phys_probe_slope_lr_scale),
               '--slope-prior-weight', str(opt.phys_probe_lambda_slope),
               '--sh-pixels', str(opt.phys_attribute_sh_pixels), '--export-views', '0']
@@ -86,9 +86,12 @@ def validate_attribute_inputs(dataset, opt):
             with Image.open(source/branch/split/(name+'.jpg')) as image:
                 if image.size != (640, 480):
                     raise ValueError('Frozen attribute adapter requires original 640x480 images')
-    print('[ATTRIBUTE PROBE] inputs verified; independent/no-feedback fit budget={} x {}; '
-          '{}; learnable regional slope; GT-MSE feedback weight={}'.format(opt.phys_attribute_steps,
-                                           opt.phys_attribute_views_per_step, VARIANT, opt.phys_aux_mse_max_weight), flush=True)
+    print('[ATTRIBUTE PROBE] inputs verified; independent fit budget={} x {}; '
+          '{}; learnable regional slope; epsilon0_raw_lr={} slope_raw_lr={}; feedback_weight={}'.format(
+              opt.phys_attribute_steps, opt.phys_attribute_views_per_step, VARIANT,
+              float(getattr(opt, 'phys_attribute_emissivity_lr', .003)),
+              float(getattr(opt, 'phys_attribute_emissivity_lr', .003))*opt.phys_probe_slope_lr_scale,
+              float(opt.phys_aux_mse_max_weight)), flush=True)
 
 
 def _validate_emissivity_fields(cache):
@@ -233,14 +236,18 @@ def select_attribute_iteration(model_path, requested):
 @torch.no_grad()
 def render_attribute_fields(scene, gaussians, geo_model, pipeline, model_path, opt, iteration,
                             device, is_6dof, load2gpu_on_the_fly, rgb_geo_model=None,
-                            skip_train=True, skip_test=False, background=None, is_blender=False):
+                            skip_train=True, skip_test=False, background=None, is_blender=False,
+                            color_renderer=None, temporal_pose_model=None, scene_extent=1.0,
+                            temperature_range=None):
     """Render cached fields only; this function never refits or changes SH."""
     import numpy as np
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
+    from PIL import Image
+    from torchvision.utils import save_image
     from gaussian_renderer import render
-    from train import compute_geo_fields, estimate_temporal_jitter_interval
+    from train import apply_temporal_pose_delta, compute_geo_fields, estimate_temporal_jitter_interval
     model = Path(model_path).resolve()
     folder = model/'point_cloud'/('iteration_%d'%iteration)
     path = folder/CACHE_NAME
@@ -266,20 +273,38 @@ def render_attribute_fields(scene, gaussians, geo_model, pipeline, model_path, o
     options = cache['options']
     minimum = options['min_accumulation']
     lo, hi = options['temp_min'], options['temp_max']
+    if temperature_range is not None:
+        temperature_range = tuple(float(value) for value in temperature_range)
+        if (len(temperature_range) != 2 or not np.isfinite(temperature_range).all()
+                or temperature_range[0] >= temperature_range[1]):
+            raise ValueError('temperature_range requires finite MIN_C < MAX_C')
+    epsilon_limits = (float(cache['state_dict']['low'].min()),
+                      float(cache['state_dict']['high'].max()))
+    panel_order = ['IR GT', 'IR Render', 'RGB GT', 'RGB Render',
+                   'T Distribution', 'epsilon Distribution']
+    panel_files = ['ir_gt.png', 'ir_render.png', 'rgb_gt.png', 'rgb_render.png',
+                   'temperature.png', 'emissivity.png']
     if background is None:
         raise ValueError('Pass the source checkpoint background to the field renderer')
     black = torch.zeros(3, device=device)
     interval = estimate_temporal_jitter_interval(scene.getTrainCameras(), 'fid_median')
     def deformation(view, network, feature):
-        return compute_geo_fields(view, gaussians, network, pipeline, background, opt, iteration,
-                                  lambda _:0., interval, device, is_blender,
-                                  feature_set=feature, eval_mode=True)
+        delta, rotation, scaling = compute_geo_fields(
+            view, gaussians, network, pipeline, background, opt, iteration,
+            lambda _:0., interval, device, is_blender, feature_set=feature, eval_mode=True)
+        delta, _, _, _ = apply_temporal_pose_delta(
+            delta, gaussians, view.fid, temporal_pose_model, opt, iteration, scene_extent)
+        return delta, rotation, scaling
     rows = []
     for split, views, skip in [('train', scene.getTrainCameras(), skip_train),
                                ('test', scene.getTestCameras(), skip_test)]:
         if skip:
             continue
         root = model/split/('physical_%d'%iteration)
+        if not views:
+            raise ValueError('No '+split+' cameras available for physical-field rendering')
+        if any(not getattr(view, 'is_rgbt', False) or view.original_rgb_image is None for view in views):
+            raise ValueError('Six-panel export requires paired RGB and IR cameras')
         root.mkdir(parents=True, exist_ok=True)
         for view in views:
             original_device = view.world_view_transform.device
@@ -300,50 +325,96 @@ def render_attribute_fields(scene, gaussians, geo_model, pipeline, model_path, o
                 slope_map = (2*raster(encoded_slope)[0]/acc.clamp_min(1e-8)-1)/span
                 slope_map = slope_map.masked_fill(~valid, float('nan')).cpu().numpy()
                 temp, eps = [x.masked_fill(~valid, float('nan')).cpu().numpy() for x in (temp, eps)]
-                ir = raster()
-                rgb_deform = deformation(view, rgb_geo_model or geo_model, 'rgb')
-                rgb = render(view, gaussians, pipeline, background, *rgb_deform, device,
-                             is_6dof=is_6dof, feature_set='rgb', detach_geometry=True, disable_atmosphere=True)['render']
+                if color_renderer is not None:
+                    ir = color_renderer(view, 'thermal')
+                    rgb = color_renderer(view, 'rgb')
+                else:
+                    ir = raster()
+                    rgb_deform = deformation(view, rgb_geo_model or geo_model, 'rgb')
+                    rgb = render(view, gaussians, pipeline, background, *rgb_deform, device,
+                                 is_6dof=is_6dof, feature_set='rgb', detach_geometry=True, disable_atmosphere=True)['render']
                 output = root/view.image_name; output.mkdir(exist_ok=True)
+                for image, filename in zip(
+                        [view.original_image[:3], ir, view.original_rgb_image[:3], rgb], panel_files[:4]):
+                    save_image(image, str(output/filename))
+                Image.fromarray(valid.cpu().numpy().astype(np.uint8)*255).save(output/'valid_mask.png')
                 np.savez_compressed(output/'fields.npz', temperature_C=temp, emissivity=eps,
                                     emissivity_slope_per_K=slope_map,
                                     temperature_ref_K=cache.get('temperature_ref_K', 300.),
                                     field_valid=valid.cpu().numpy(), accumulation=acc.cpu().numpy())
-                as_rgb = lambda x:x.detach().clamp(0, 1).permute(1, 2, 0).cpu().numpy()
-                fig, axes = plt.subplots(1, 6, figsize=(24, 4.4))
-                fig.subplots_adjust(left=.01, right=.99, top=.80, bottom=.16, wspace=.045)
-                panels = [as_rgb(view.original_image), as_rgb(ir), temp, eps,
-                          as_rgb(view.original_rgb_image), as_rgb(rgb)]
-                for i, (ax, data, title) in enumerate(zip(axes, panels,
-                        ['IR-GT', 'IR-Render (SH)', 'T estimate (C)', 'epsilon estimate', 'RGB-GT', 'RGB-Render'])):
-                    if i in (2, 3):
-                        cmap = plt.get_cmap('inferno' if i == 2 else 'viridis').copy(); cmap.set_bad('#dddddd')
-                        limits = (lo-273.15, hi-273.15) if i == 2 else (min(.2, options['metal_init']-options['metal_half_range']), .99)
-                        im = ax.imshow(np.ma.masked_invalid(data), cmap=cmap, vmin=limits[0], vmax=limits[1])
-                        box = ax.get_position(); cax = fig.add_axes([box.x0+.05*box.width, .11, .90*box.width, .02])
-                        fig.colorbar(im, cax=cax, orientation='horizontal')
-                    else:
-                        ax.imshow(data)
-                    ax.set_title(title, fontsize=12); ax.axis('off')
-                fig.suptitle('{} | checkpoint {} | {} | Probe step {}'.format(view.image_name, iteration, cache['variant'], cache['step']))
-                slope_label = 'Region-shared learned epsilon(T)' if cache.get('slope_learnable') else 'Constant emissivity'
-                fig.text(.5, .025, 'T/epsilon are prior-conditioned estimates, not measured ground truth. '+slope_label+'. Cached-field rendering does not update SH.', ha='center')
-                fig.savefig(output/'comparison.png', dpi=150); plt.close(fig)
-                for data, name, cmap_name, lower, upper in [(temp, 'temperature', 'inferno', lo-273.15, hi-273.15),
-                                                          (eps, 'emissivity', 'viridis', min(.2, options['metal_init']-options['metal_half_range']), .99)]:
-                    fig, ax = plt.subplots(figsize=(6.5, 5))
-                    im = ax.imshow(np.ma.masked_invalid(data), cmap=cmap_name, vmin=lower, vmax=upper)
-                    ax.set_title(view.image_name+' | '+name+(' (C)' if name == 'temperature' else ''))
-                    ax.axis('off'); fig.colorbar(im, ax=ax, shrink=.8)
-                    fig.savefig(output/(name+'.png'), dpi=150, bbox_inches='tight'); plt.close(fig)
                 rows.append(dict(view=view.image_name, split=split, valid_fraction=float(valid.float().mean()),
+                                 temperature_C_min_max=[float(np.nanmin(temp)), float(np.nanmax(temp))] if np.isfinite(temp).any() else None,
                                  temperature_C_p05_p50_p95=np.nanquantile(temp, [.05, .5, .95]).tolist() if np.isfinite(temp).any() else None))
-                print('[PHYSICAL FIELDS] '+str(output/'comparison.png'), flush=True)
             finally:
                 view.load2device(original_device)
+
+        # Choose one colorbar from all rendered views. Do not hide small metal
+        # regions with percentiles or stretch each camera independently.
+        split_rows = [row for row in rows if row['split'] == split]
+        ranges = [row['temperature_C_min_max'] for row in split_rows
+                  if row['temperature_C_min_max'] is not None]
+        if not ranges:
+            raise ValueError('No supported temperature pixels in '+split)
+        actual_temperature = (min(value[0] for value in ranges), max(value[1] for value in ranges))
+        temperature_limits = temperature_range or (
+            float(5*np.floor(actual_temperature[0]/5)),
+            float(5*np.ceil(actual_temperature[1]/5)),
+        )
+        if temperature_limits[0] == temperature_limits[1]:
+            temperature_limits = (temperature_limits[0]-5, temperature_limits[1]+5)
+        below = actual_temperature[0] < temperature_limits[0]
+        above = actual_temperature[1] > temperature_limits[1]
+        temperature_extend = 'both' if below and above else 'min' if below else 'max' if above else 'neither'
+        print('[PHYSICAL FIELDS] {} temperature {:.2f}..{:.2f} C; shared colorbar {:.1f}..{:.1f} C'.format(
+            split, *actual_temperature, *temperature_limits), flush=True)
+        for row in split_rows:
+            output = root/row['view']
+            with np.load(output/'fields.npz') as fields:
+                temp, eps = fields['temperature_C'], fields['emissivity']
+            panels = []
+            for filename in panel_files[:4]:
+                with Image.open(output/filename) as image:
+                    panels.append(np.array(image.convert('RGB')))
+            panels += [temp, eps]
+            fig, axes = plt.subplots(1, 6, figsize=(24, 4.4))
+            fig.subplots_adjust(left=.01, right=.99, top=.80, bottom=.16, wspace=.045)
+            titles = panel_order[:4]+['T Distribution (C)', r'$\epsilon$ Distribution']
+            for i, (ax, data, title) in enumerate(zip(axes, panels, titles)):
+                if i in (4, 5):
+                    cmap = plt.get_cmap('inferno' if i == 4 else 'viridis').copy(); cmap.set_bad('#dddddd')
+                    limits = temperature_limits if i == 4 else epsilon_limits
+                    im = ax.imshow(np.ma.masked_invalid(data), cmap=cmap, vmin=limits[0], vmax=limits[1])
+                    box = ax.get_position(); cax = fig.add_axes([box.x0+.05*box.width, .11, .90*box.width, .02])
+                    fig.colorbar(im, cax=cax, orientation='horizontal',
+                                 extend=temperature_extend if i == 4 else 'neither')
+                else:
+                    ax.imshow(data)
+                ax.set_title(title, fontsize=12); ax.axis('off')
+            fig.suptitle('{} | checkpoint {} | {} | Probe step {}'.format(row['view'], iteration, cache['variant'], cache['step']))
+            slope_label = 'Region-shared learned epsilon(T)' if cache.get('slope_learnable') else 'Constant emissivity'
+            fig.text(.5, .025, 'T/epsilon are estimated fields. Gray: insufficient support. '+slope_label+'.', ha='center')
+            fig.savefig(output/'comparison.png', dpi=150); plt.close(fig)
+            for data, name, cmap_name, lower, upper in [(temp, 'temperature', 'inferno', *temperature_limits),
+                                                      (eps, 'emissivity', 'viridis', *epsilon_limits)]:
+                fig, ax = plt.subplots(figsize=(6.5, 5))
+                cmap = plt.get_cmap(cmap_name).copy(); cmap.set_bad('#dddddd')
+                im = ax.imshow(np.ma.masked_invalid(data), cmap=cmap, vmin=lower, vmax=upper)
+                ax.set_title(row['view']+' | '+name+(' (C)' if name == 'temperature' else ''))
+                ax.axis('off'); fig.colorbar(im, ax=ax, shrink=.8,
+                                            extend=temperature_extend if name == 'temperature' else 'neither')
+                fig.savefig(output/(name+'.png'), dpi=150, bbox_inches='tight'); plt.close(fig)
+            print('[PHYSICAL FIELDS] '+str(output/'comparison.png'), flush=True)
         _json(root/'summary.json', dict(source_cache=str(path), source_iteration=iteration,
+                                        panel_order=panel_order, panel_files=panel_files,
+                                        temperature_C_limits=list(temperature_limits),
+                                        actual_temperature_C_min_max=list(actual_temperature),
+                                        temperature_colorbar_extend=temperature_extend,
+                                        temperature_colorbar_mode='manual' if temperature_range is not None else 'shared_actual_range',
+                                        emissivity_limits=list(epsilon_limits),
+                                        invalid_color='#dddddd', temperature_unit='C',
                                         emissivity_model=cache.get('emissivity_model', 'constant'),
                                         slope_learnable=cache.get('slope_learnable', False),
                                         temperature_ground_truth=False, emissivity_ground_truth=False,
-                                        main_loss_feedback=False, views=[r for r in rows if r['split'] == split]))
+                                        main_loss_feedback=bool(binding.get('main_loss_feedback', False)),
+                                        views=[r for r in rows if r['split'] == split]))
     return rows

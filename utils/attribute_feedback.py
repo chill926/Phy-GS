@@ -118,7 +118,7 @@ class AttributeFeedback:
         metal = (F.smooth_l1_loss(error[core], torch.zeros_like(error[core]), beta=p.options.huber_beta)
                  if core.sum() >= 4 else q.new_zeros(()))
         normalized = (q-p.response.c['O']-frame['meta']['median'])/frame['meta']['span']+.5
-        display_prediction = p.display(normalized[None], frame['xy'], (480, 640))[0]
+        display_prediction = p.display(normalized[None], frame['xy'], (480, 640),palette=frame.get('display_palette'))[0]
         mask = frame['display_valid']
         sh = (F.smooth_l1_loss(display_prediction[mask], frame['teacher'][mask], beta=.02)
               if mask.any() else q.new_zeros(()))

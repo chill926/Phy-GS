@@ -246,15 +246,15 @@ class OptimizationParams(ParamGroup):
         self.ir_atmosphere_air = -1.0
         self.ir_atmosphere_air_quantile = 0.1
         self.phys_probe_mode = "full_sh_radiometric_attributes"
-        # With aux weight > 0, attributes learn online after phys_aux_start_iter;
-        # the independent/no-feedback fit uses the budget below.
+        # Frozen attribute readout runs once AFTER saving the final checkpoint.
         self.phys_attribute_mapping = "output/dn_display_mapping/RoadBlock_20261021_195046/monotone_colorize_then_resize/mapping.json"
         self.phys_attribute_steps = 1024
         self.phys_attribute_views_per_step = 4
+        # Attribute readout only; independent of all reconstruction learning rates.
+        self.phys_attribute_emissivity_lr = 0.003
         self.phys_attribute_eval_every = 128
         self.phys_attribute_log_every = 32
         self.phys_attribute_sh_pixels = 4096
-        self.phys_attribute_slope_start_fraction = 0.75
         # Detached full-SH inputs, prior to any DN/temperature calibration.
         self.phys_probe_sh_views = 0  # 0 = all train cameras, never test cameras.
         self.phys_probe_sh_min_acc = 0.98

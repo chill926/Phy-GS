@@ -92,14 +92,34 @@ def extract_flir(path, png_byte_order='swap'):
     raw, camera, palette_record = (records[k] for k in (1, 0x20, 0x22))
     raw_endian = '<' if raw[:2] == b'\x02\x00' else '>'
     width, height = struct.unpack_from(raw_endian+'HH', raw, 2)
-    if not raw[32:].startswith(b'\x89PNG\r\n\x1a\n'):
-        raise ValueError('This reader only supports embedded 16-bit PNG')
-    dn = np.asarray(Image.open(io.BytesIO(raw[32:])))
+    payload = raw[32:]
+    if payload.startswith(b'\x89PNG\r\n\x1a\n'):
+        encoding = 'PNG'
+        dn = np.asarray(Image.open(io.BytesIO(payload)))
+        # Preserve the audited PNG path exactly. This flag applies to PNGs,
+        # not to the numerical uint16 samples returned by a JPEG-LS decoder.
+        if dn.ndim != 2 or dn.shape != (height, width) or dn.min() < 0 or dn.max() > 65535:
+            raise ValueError('Unsupported thermal PNG shape/range: ' + str(path))
+        dn = dn.astype(np.uint16)
+        if png_byte_order == 'swap':
+            dn = dn.byteswap()
+    elif payload.startswith(b'\xff\xd8') and b'\xff\xf7' in payload[:64]:
+        # Some FLIR frames use a 16-bit JPEG-LS codestream (SOF55).
+        # imagecodecs/CharLS decodes native numerical samples without an 8-bit
+        # conversion. Cross-checked against FFmpeg on Truck/FLIR3077.
+        encoding = 'JPEG-LS'
+        try:
+            import imagecodecs
+            dn = imagecodecs.jpegls_decode(payload)
+        except (ImportError, AttributeError) as error:
+            raise RuntimeError('16-bit JPEG-LS input requires imagecodecs with CharLS support') from error
+        if dn.dtype.kind != 'u' or dn.dtype.itemsize != 2:
+            raise ValueError('Expected 16-bit unsigned JPEG-LS thermal samples: ' + str(path))
+        dn = dn.astype(np.uint16, copy=False)
+    else:
+        raise ValueError('Unsupported thermal encoding; require 16-bit PNG or JPEG-LS: ' + str(path))
     if dn.ndim != 2 or dn.shape != (height, width) or dn.min() < 0 or dn.max() > 65535:
-        raise ValueError('Unsupported thermal PNG shape/range')
-    dn = dn.astype(np.uint16)
-    if png_byte_order == 'swap':
-        dn = dn.byteswap()
+        raise ValueError('Unsupported thermal image shape/range: ' + str(path))
     camera_endian = '<' if camera[:2] == b'\x02\x00' else '>'
     median = struct.unpack_from(camera_endian+'H', camera, 0x338)[0]
     span = struct.unpack_from(camera_endian+'H', camera, 0x33c)[0]
@@ -109,7 +129,8 @@ def extract_flir(path, png_byte_order='swap'):
     palette = np.frombuffer(palette_record[0x70:0x70+3*colors], np.uint8).reshape(colors, 3).copy()
     meta = {'median': median, 'span': span, 'shape': list(dn.shape),
             'png_byte_order': png_byte_order, 'dn_min': int(dn.min()), 'dn_max': int(dn.max()),
-            'palette_sha256': hashlib.sha256(palette.tobytes()).hexdigest()}
+            'palette_sha256': hashlib.sha256(palette.tobytes()).hexdigest(),
+            'raw_encoding': encoding}
     meta['planck'] = {name: struct.unpack_from(camera_endian+fmt, camera, offset)[0]
                       for name, fmt, offset in [('R1','f',0x58), ('B','f',0x5c),
                                                ('F','f',0x60), ('O','i',0x308), ('R2','f',0x30c)]}
@@ -138,19 +159,28 @@ class DisplayMapping(torch.nn.Module):
         self.offset = torch.nn.Parameter(torch.zeros(()))
         self.curve_logits = torch.nn.Parameter(torch.zeros(knots-1), requires_grad=model == 'monotone')
 
-    def curve(self, value):
+    def curve(self, value, palette=None):
         value = (self.log_gain.exp()*value + self.offset).clamp(0, 1)
         if self.model == 'monotone':
             heights = torch.cat([value.new_zeros(1), self.curve_logits.softmax(0).cumsum(0)])
             s = value*(self.knots-1)
             lo = s.floor().long().clamp(0, self.knots-2)
             value = heights[lo] + (s-lo)*(heights[lo+1]-heights[lo])
-        index = value*(len(self.palette)-1)
-        lo = index.floor().long().clamp(0, len(self.palette)-2)
+        palette = self.palette if palette is None else palette
+        colors = palette.shape[-2]
+        index = value*(colors-1)
+        lo = index.floor().long().clamp(0, colors-2)
         fraction = (index-lo).unsqueeze(-1)
-        return self.palette[lo]*(1-fraction) + self.palette[lo+1]*fraction
+        if palette.ndim == 2:
+            lower, upper = palette[lo], palette[lo+1]
+        elif palette.ndim == 3 and value.ndim == 2 and len(palette) == len(value):
+            batch = torch.arange(len(palette),device=value.device)[:,None]
+            lower, upper = palette[batch,lo], palette[batch,lo+1]
+        else:
+            raise ValueError('Invalid per-frame palette batch')
+        return lower*(1-fraction) + upper*fraction
 
-    def forward(self, dn_normalized, xy, target_size):
+    def forward(self, dn_normalized, xy, target_size, palette=None):
         """dn_normalized [B,H,W], xy [B,N,2] in output normalized coordinates."""
         height, width = target_size
         p = self.geometry
@@ -165,8 +195,8 @@ class DisplayMapping(torch.nn.Module):
         wx, wy = x-x0, y-y0
         weights = [(1-wx)*(1-wy), wx*(1-wy), (1-wx)*wy, wx*wy]
         if self.order == 'resize_then_colorize':
-            return self.curve(sum(v*t for v, t in zip(values, weights)))
-        return sum(self.curve(v)*t.unsqueeze(-1) for v, t in zip(values, weights))
+            return self.curve(sum(v*t for v, t in zip(values, weights)), palette)
+        return sum(self.curve(v,palette)*t.unsqueeze(-1) for v, t in zip(values, weights))
 
     def regularization(self):
         # Weak preference for a smooth monotone display curve and small geometry.
@@ -196,10 +226,11 @@ def read_frames(scene, split, byte_order, names=None):
         dn, palette, meta = extract_flir(raw_path, byte_order)
         if reference_palette is None:
             reference_palette = palette
-        if not np.array_equal(palette, reference_palette):
-            raise ValueError('Palettes differ; one shared palette is not applicable')
+        if palette.shape != reference_palette.shape:
+            raise ValueError('Mixed palette lengths are unsupported in one mapping batch')
         target = np.asarray(Image.open(target_path).convert('RGB')).copy()
         frames.append({'name': target_path.stem, 'dn': dn, 'target': target, 'meta': meta,
+                       'display_palette': palette_rgb(palette),
                        'raw_path': str(raw_path.resolve()), 'target_path': str(target_path.resolve()),
                        'raw_sha256': sha256(raw_path), 'target_sha256': sha256(target_path)})
     return frames, reference_palette
@@ -224,7 +255,8 @@ def sample_frames(frames, pixels, device, seed):
         dns.append(normalized_dn(frame, device))
         xys.append(torch.tensor(xy, dtype=torch.float32, device=device))
         rgbs.append(torch.tensor(frame['target'].reshape(-1, 3)[indices]/255., dtype=torch.float32, device=device))
-    return torch.stack(dns), torch.stack(xys), torch.stack(rgbs), shape
+    palettes = torch.stack([torch.tensor(f['display_palette'],dtype=torch.float32,device=device) for f in frames])
+    return torch.stack(dns), torch.stack(xys), torch.stack(rgbs), shape, palettes
 
 
 @torch.no_grad()
@@ -235,7 +267,9 @@ def render_frame(model, frame, device, chunk=32768):
     for start in range(0, h*w, chunk):
         idx = torch.arange(start, min(start+chunk, h*w), device=device)
         xy = torch.stack([2*((idx % w)+.5)/w-1, 2*(torch.div(idx, w, rounding_mode='floor')+.5)/h-1], -1)
-        rgb = model(dn, xy.unsqueeze(0), (h, w))[0]
+        palette = frame.get('display_palette')
+        if palette is not None:palette=torch.as_tensor(palette,dtype=torch.float32,device=device)
+        rgb = model(dn, xy.unsqueeze(0), (h, w), palette=palette)[0]
         output.append((rgb.clamp(0, 1)*255).round().to(torch.uint8).cpu().numpy())
     return np.concatenate(output).reshape(h, w, 3)
 
@@ -286,6 +320,7 @@ def save_model(path, model, palette_ycc, args, train, validation, history):
              'model': model.model, 'order': model.order, 'knots': model.knots,
              'parameters': params, 'palette_rgb_01': model.palette.cpu().numpy().tolist(),
              'palette_ycrcb': palette_ycc.tolist(), 'png_byte_order': args.png_byte_order,
+             'palette_mode': 'known_per_frame_FLIR_metadata',
              'normalization': 'u=(DN-RawValueMedian)/RawValueRange+0.5; shared gain and offset follow',
              'geometry': 'gx=(1+p0/W)*x+(p1/W)*y+2*p2/W; gy=(p3/H)*x+(1+p4/H)*y+2*p5/H; x,y normalized; shared inverse affine; border replicate; bilinear sampling',
              'fit_frames': [f['name'] for f in train], 'validation_frames': [f['name'] for f in validation],
@@ -331,14 +366,14 @@ def fit(args):
     for step in range(args.steps+1):
         if step:
             optimizer.zero_grad()
-            loss = (model(train_data[0],train_data[1],train_data[3])-train_data[2]).square().mean()
+            loss = (model(train_data[0],train_data[1],train_data[3],palette=train_data[4])-train_data[2]).square().mean()
             (loss+model.regularization()).backward()
             optimizer.step()
             model.constrain()
         if step % args.log_every == 0 or step == args.steps:
             with torch.no_grad():
-                train_mse = (model(train_data[0],train_data[1],train_data[3])-train_data[2]).square().mean().item()
-                val_mse = (model(val_data[0],val_data[1],val_data[3])-val_data[2]).square().mean().item()
+                train_mse = (model(train_data[0],train_data[1],train_data[3],palette=train_data[4])-train_data[2]).square().mean().item()
+                val_mse = (model(val_data[0],val_data[1],val_data[3],palette=val_data[4])-val_data[2]).square().mean().item()
             row = {'step':step, 'train_PSNR_sampled':-10*math.log10(max(train_mse,1e-15)),
                    'val_PSNR_sampled':-10*math.log10(max(val_mse,1e-15)), 'seconds':round(time.time()-started,2)}
             history.append(row)
@@ -361,7 +396,8 @@ def evaluate(args):
     names = data['validation_frames'] if args.split == 'validation' else None
     frames, palette = read_frames(args.scene, 'train' if args.split == 'validation' else args.split,
                                   data['png_byte_order'], names)
-    if not np.array_equal(palette, np.asarray(data['palette_ycrcb'], np.uint8)):
+    if (data.get('palette_mode') != 'known_per_frame_FLIR_metadata'
+            and not np.array_equal(palette, np.asarray(data['palette_ycrcb'], np.uint8))):
         raise ValueError('Checkpoint palette differs from evaluation palette')
     write_json(output/'evaluation_provenance.json', {'checkpoint':str(Path(args.checkpoint).resolve()),
                'checkpoint_sha256':sha256(args.checkpoint), 'split':args.split,
@@ -375,7 +411,8 @@ def apply(args):
     model, data = load_model(args.checkpoint, device)
     if args.raw:
         dn, palette, meta = extract_flir(args.raw, data['png_byte_order'])
-        if not np.array_equal(palette, np.asarray(data['palette_ycrcb'], np.uint8)):
+        if (data.get('palette_mode') != 'known_per_frame_FLIR_metadata'
+                and not np.array_equal(palette, np.asarray(data['palette_ycrcb'], np.uint8))):
             raise ValueError('Different palette')
     else:
         if args.median is None or args.span is None or args.span <= 0:
@@ -385,6 +422,7 @@ def apply(args):
             raise ValueError('Expected finite 2-D DN array')
         meta = {'median':args.median, 'span':args.span}
     frame = {'dn':dn, 'meta':meta, 'target':np.zeros((args.height,args.width,3),np.uint8)}
+    if args.raw:frame['display_palette']=palette_rgb(palette)
     path = Path(args.output)
     if path.exists():
         raise FileExistsError(path)

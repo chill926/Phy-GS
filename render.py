@@ -42,6 +42,7 @@ except ImportError:
 
 
 def render_and_save_physical_fields(*args, **kwargs):
+    """Export IR GT/render, RGB GT/render, temperature and emissivity per view."""
     from utils.attribute_probe_pipeline import render_attribute_fields
     return render_attribute_fields(*args, **kwargs)
 
@@ -762,7 +763,7 @@ def interpolate_view_original(model_path, load2gpt_on_the_fly, is_6dof, name, it
 
 
 def render_sets(dataset: ModelParams, iteration: int, pipeline: PipelineParams, skip_train: bool, skip_test: bool,
-                mode: str, device, opt=None):
+                mode: str, device, opt=None, temperature_range=None):
     with torch.no_grad():
         gaussians = GaussianModel(dataset.sh_degree, device)
         if getattr(dataset, "load_model_path", ""):
@@ -873,6 +874,20 @@ def render_sets(dataset: ModelParams, iteration: int, pipeline: PipelineParams, 
             data_branch = dataset.data_branch
 
         if mode == "physical_fields":
+            def report_color(view, feature_set):
+                thermal = feature_set == "thermal"
+                network = geo_model if thermal else (rgb_geo_model or geo_model)
+                image = render_eval_view(
+                    view, gaussians, render, (pipeline, background), network, opt,
+                    loaded_iter, device, dataset.is_6dof, scene.cameras_extent,
+                    feature_set=feature_set, eval_temporal_interval=eval_temporal_interval,
+                    temporal_affine_model=temporal_affine_model if thermal else None,
+                    temporal_pose_model=temporal_pose_model,
+                )
+                if thermal and _is_temporal_thermal_render(gaussians, view):
+                    image = _apply_temporal_tcm(image, temporal_tcm_model, opt)
+                return image
+
             render_and_save_physical_fields(
                 scene,
                 gaussians,
@@ -889,6 +904,10 @@ def render_sets(dataset: ModelParams, iteration: int, pipeline: PipelineParams, 
                 skip_test=skip_test,
                 background=background,
                 is_blender=dataset.is_blender,
+                color_renderer=report_color,
+                temporal_pose_model=temporal_pose_model,
+                scene_extent=scene.cameras_extent,
+                temperature_range=temperature_range,
             )
             return {
                 "mode": mode,
@@ -961,7 +980,7 @@ if __name__ == "__main__":
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     # Set up command line argument parser
-    parser = ArgumentParser(description="Testing script parameters")
+    parser = ArgumentParser(description="Render saved reconstruction and physical fields")
     model = ModelParams(parser, device, sentinel=True)
     pipeline = PipelineParams(parser)
     optimization = OptimizationParams(parser, sentinel=True)
@@ -970,7 +989,15 @@ if __name__ == "__main__":
     parser.add_argument("--render_train", action="store_true")
     parser.add_argument("--skip_test", action="store_true")
     parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--mode", default='render', choices=['render', 'time', 'view', 'all', 'pose', 'original', 'physical_fields'])
+    parser.add_argument(
+        "--mode", default='render',
+        choices=['render', 'time', 'view', 'all', 'pose', 'original', 'physical_fields'],
+        help="physical_fields exports IR GT, IR Render, RGB GT, RGB Render, T and epsilon; test views by default",
+    )
+    parser.add_argument(
+        "--temperature_range", type=float, nargs=2, metavar=("MIN_C", "MAX_C"),
+        help="Physical-field colorbar in Celsius; default: shared actual range of the exported views",
+    )
     parser.add_argument("--skip_temporal_residual_postprocess", action="store_true")
     parser.add_argument("--temporal_residual_grid_sizes", nargs="+", type=int, default=None)
     parser.add_argument("--temporal_residual_ks", nargs="+", type=int, default=None)
@@ -1015,6 +1042,7 @@ if __name__ == "__main__":
         args.mode,
         device,
         optimization.extract(args),
+        temperature_range=getattr(args, "temperature_range", None),
     )
     if apply_temporal_residual:
         _run_temporal_residual_postprocess(args, render_info)

@@ -1,0 +1,1077 @@
+{
+  "schema_version": 1,
+  "labels": {
+    "unknown": 0,
+    "nonmetal": 1,
+    "metal": 2
+  },
+  "emissivity": {
+    "metal": {
+      "initial": 0.3,
+      "min": 0.2,
+      "max": 0.4
+    },
+    "nonmetal": "inherit_probe",
+    "unknown": "inherit_probe"
+  },
+  "sam3": {
+    "checkpoint": "/home/liupengyu/sam3/checkpoints/sam3.pt",
+    "instance_threshold": 0.23,
+    "pixel_threshold": 0.0,
+    "conflict_margin": 0.05,
+    "prompts": {
+      "metal": [
+        "truck fuel tank",
+        "metal truck step",
+        "metal bolt",
+        "metal screw"
+      ],
+      "nonmetal": [
+        "painted metal surface",
+        "rusty metal",
+        "rusted steel surface",
+        "industrial equipment",
+        "steel structure",
+        "metal roof",
+        "factory ceiling",
+        "metal platform",
+        "wooden board",
+        "dirt ground",
+        "muddy ground",
+        "concrete pillar",
+        "ground",
+        "concrete floor",
+        "concrete wall",
+        "brick wall",
+        "pile of sand",
+        "pile of gravel",
+        "truck",
+        "red truck body",
+        "truck cab",
+        "cylindrical tank",
+        "large metal container",
+        "vertical pipe",
+        "metal railing",
+        "industrial wall",
+        "corrugated metal roof",
+        "truck windshield",
+        "truck side window",
+        "rubber tire",
+        "truck tire",
+        "truck headlight",
+        "plastic cover"
+      ]
+    },
+    "pipeline_version": 2,
+    "mask_probability_threshold": 0.5,
+    "anchor_crops": {
+      "enabled": true,
+      "max_anchors": 1,
+      "width_factor": 2.0,
+      "height_factor": 0.55,
+      "bottom_padding": 0.15,
+      "min_size": 128,
+      "retry_horizontal_offsets": [
+        -0.1,
+        0.1
+      ],
+      "context_scale": 1.25,
+      "context_bottom_padding": 0.35
+    },
+    "groups": [
+      {
+        "name": "prompt_00",
+        "class": "nonmetal",
+        "prompts": [
+          "painted metal surface"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_01",
+        "class": "nonmetal",
+        "prompts": [
+          "rusty metal"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_02",
+        "class": "nonmetal",
+        "prompts": [
+          "rusted steel surface"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_03",
+        "class": "nonmetal",
+        "prompts": [
+          "industrial equipment"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_04",
+        "class": "nonmetal",
+        "prompts": [
+          "steel structure"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_05",
+        "class": "nonmetal",
+        "prompts": [
+          "metal roof"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_06",
+        "class": "nonmetal",
+        "prompts": [
+          "factory ceiling"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_07",
+        "class": "nonmetal",
+        "prompts": [
+          "metal platform"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_08",
+        "class": "nonmetal",
+        "prompts": [
+          "wooden board"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_09",
+        "class": "nonmetal",
+        "prompts": [
+          "dirt ground"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_10",
+        "class": "nonmetal",
+        "prompts": [
+          "muddy ground"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_11",
+        "class": "nonmetal",
+        "prompts": [
+          "concrete pillar"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_12",
+        "class": "nonmetal",
+        "prompts": [
+          "ground"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_13",
+        "class": "nonmetal",
+        "prompts": [
+          "concrete floor"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_14",
+        "class": "nonmetal",
+        "prompts": [
+          "concrete wall"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_15",
+        "class": "nonmetal",
+        "prompts": [
+          "brick wall"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_16",
+        "class": "nonmetal",
+        "prompts": [
+          "pile of sand"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_17",
+        "class": "nonmetal",
+        "prompts": [
+          "pile of gravel"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_18",
+        "class": "nonmetal",
+        "prompts": [
+          "truck"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_19",
+        "class": "nonmetal",
+        "prompts": [
+          "red truck body"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_20",
+        "class": "nonmetal",
+        "prompts": [
+          "truck cab"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_21",
+        "class": "nonmetal",
+        "prompts": [
+          "cylindrical tank"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_22",
+        "class": "nonmetal",
+        "prompts": [
+          "large metal container"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_23",
+        "class": "nonmetal",
+        "prompts": [
+          "vertical pipe"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_24",
+        "class": "nonmetal",
+        "prompts": [
+          "metal railing"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_25",
+        "class": "nonmetal",
+        "prompts": [
+          "industrial wall"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_26",
+        "class": "nonmetal",
+        "prompts": [
+          "corrugated metal roof"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_27",
+        "class": "nonmetal",
+        "prompts": [
+          "truck windshield"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_28",
+        "class": "nonmetal",
+        "prompts": [
+          "truck side window"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_29",
+        "class": "nonmetal",
+        "prompts": [
+          "rubber tire"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_30",
+        "class": "nonmetal",
+        "prompts": [
+          "truck tire"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_31",
+        "class": "nonmetal",
+        "prompts": [
+          "truck headlight"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_32",
+        "class": "nonmetal",
+        "prompts": [
+          "plastic cover"
+        ],
+        "priority": 10,
+        "instance_threshold": 0.23,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_33",
+        "class": "metal",
+        "prompts": [
+          "truck fuel tank"
+        ],
+        "priority": 20,
+        "instance_threshold": 0.4,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_34",
+        "class": "metal",
+        "prompts": [
+          "metal truck step"
+        ],
+        "priority": 20,
+        "instance_threshold": 0.4,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_35",
+        "class": "metal",
+        "prompts": [
+          "metal bolt"
+        ],
+        "priority": 20,
+        "instance_threshold": 0.4,
+        "views": [
+          "full"
+        ]
+      },
+      {
+        "name": "prompt_36",
+        "class": "metal",
+        "prompts": [
+          "metal screw"
+        ],
+        "priority": 20,
+        "instance_threshold": 0.4,
+        "views": [
+          "full"
+        ]
+      }
+    ],
+    "scene_groups": {
+      "Truck": [
+        {
+          "name": "prompt_00",
+          "class": "nonmetal",
+          "prompts": [
+            "painted metal surface"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_01",
+          "class": "nonmetal",
+          "prompts": [
+            "rusty metal"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_02",
+          "class": "nonmetal",
+          "prompts": [
+            "rusted steel surface"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_03",
+          "class": "nonmetal",
+          "prompts": [
+            "industrial equipment"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_04",
+          "class": "nonmetal",
+          "prompts": [
+            "steel structure"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_05",
+          "class": "nonmetal",
+          "prompts": [
+            "metal roof"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_06",
+          "class": "nonmetal",
+          "prompts": [
+            "factory ceiling"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_07",
+          "class": "nonmetal",
+          "prompts": [
+            "metal platform"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_08",
+          "class": "nonmetal",
+          "prompts": [
+            "wooden board"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_09",
+          "class": "nonmetal",
+          "prompts": [
+            "dirt ground"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_10",
+          "class": "nonmetal",
+          "prompts": [
+            "muddy ground"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_11",
+          "class": "nonmetal",
+          "prompts": [
+            "concrete pillar"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_12",
+          "class": "nonmetal",
+          "prompts": [
+            "ground"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_13",
+          "class": "nonmetal",
+          "prompts": [
+            "concrete floor"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_14",
+          "class": "nonmetal",
+          "prompts": [
+            "concrete wall"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_15",
+          "class": "nonmetal",
+          "prompts": [
+            "brick wall"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_16",
+          "class": "nonmetal",
+          "prompts": [
+            "pile of sand"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_17",
+          "class": "nonmetal",
+          "prompts": [
+            "pile of gravel"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_18",
+          "class": "nonmetal",
+          "prompts": [
+            "truck"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_19",
+          "class": "nonmetal",
+          "prompts": [
+            "red truck body"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_20",
+          "class": "nonmetal",
+          "prompts": [
+            "truck cab"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_21",
+          "class": "nonmetal",
+          "prompts": [
+            "cylindrical tank"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_22",
+          "class": "nonmetal",
+          "prompts": [
+            "large metal container"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_23",
+          "class": "nonmetal",
+          "prompts": [
+            "vertical pipe"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_24",
+          "class": "nonmetal",
+          "prompts": [
+            "metal railing"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_25",
+          "class": "nonmetal",
+          "prompts": [
+            "industrial wall"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_26",
+          "class": "nonmetal",
+          "prompts": [
+            "corrugated metal roof"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_27",
+          "class": "nonmetal",
+          "prompts": [
+            "truck windshield"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_28",
+          "class": "nonmetal",
+          "prompts": [
+            "truck side window"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_29",
+          "class": "nonmetal",
+          "prompts": [
+            "rubber tire"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_30",
+          "class": "nonmetal",
+          "prompts": [
+            "truck tire"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_31",
+          "class": "nonmetal",
+          "prompts": [
+            "truck headlight"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_32",
+          "class": "nonmetal",
+          "prompts": [
+            "plastic cover"
+          ],
+          "priority": 10,
+          "instance_threshold": 0.23,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_33",
+          "class": "metal",
+          "prompts": [
+            "truck fuel tank"
+          ],
+          "priority": 20,
+          "instance_threshold": 0.4,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_34",
+          "class": "metal",
+          "prompts": [
+            "metal truck step"
+          ],
+          "priority": 20,
+          "instance_threshold": 0.4,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_35",
+          "class": "metal",
+          "prompts": [
+            "metal bolt"
+          ],
+          "priority": 20,
+          "instance_threshold": 0.4,
+          "views": [
+            "full"
+          ]
+        },
+        {
+          "name": "prompt_36",
+          "class": "metal",
+          "prompts": [
+            "metal screw"
+          ],
+          "priority": 20,
+          "instance_threshold": 0.4,
+          "views": [
+            "full"
+          ]
+        }
+      ]
+    },
+    "mask_directory": "material_masks/sam3_prompted_v2",
+    "scene_prompts": {}
+  },
+  "fusion": {
+    "max_views": 12,
+    "min_views": 2,
+    "min_known_fraction": 0.2,
+    "min_class_agreement": 0.75,
+    "min_accumulation": 0.15,
+    "relative_depth_jump": 0.03,
+    "min_region_pixels": 12,
+    "neighbors": 8,
+    "neighbor_distance_factor": 3.0,
+    "min_same_region_views": 2,
+    "max_region_conflict_fraction": 0.2
+  },
+  "optimization": {
+    "emissivity_start_fraction": 0.25,
+    "slope_start_fraction": 0.5,
+    "emissivity_lr_scale": 0.25
+  },
+  "sam3_prompted": {
+    "generator": "tools/segment_sam3_prompted_materials.py",
+    "prompt_config_path": "/home/liupengyu/physir-splat/data/materials/truck_sam3_prompts_v2.json",
+    "prompt_config_sha256": "a7e287794a78db85371f6bf5077e74768b5443165fff129aa940c7d28a99ae45",
+    "generator_sha256": "d5c5c8820bcdb5e50cb87854779dbc47ab6c6b6f0b52822645a7dfa9e412ea07",
+    "mask_rule": "SAM probability >=0.5 (or interactive decoder mask); no score product gate and no RGB-threshold contour cutting",
+    "previous_manifest": "/home/liupengyu/physir-splat/data/RGBT-Scenes/Truck/material_masks/sam3_v2/manifest.json",
+    "previous_manifest_sha256": "86557fded6336ffe6013468e59603798bd3fc89e8b0202cf0fcea532e4a83749",
+    "previous_masks_used_as": "visual prompt coordinates only",
+    "reviewed_train_prompts": {
+      "FLIR3110": [
+        {
+          "name": "visible oxidized vessel",
+          "box": [
+            90,
+            30,
+            400,
+            479
+          ],
+          "positive": [
+            [
+              280,
+              315
+            ],
+            [
+              200,
+              270
+            ],
+            [
+              300,
+              110
+            ]
+          ],
+          "negative": [
+            [
+              450,
+              410
+            ]
+          ]
+        }
+      ],
+      "FLIR3100": [
+        {
+          "name": "coated vessel behind cab",
+          "box": [
+            170,
+            0,
+            390,
+            230
+          ],
+          "positive": [
+            [
+              280,
+              100
+            ],
+            [
+              270,
+              40
+            ],
+            [
+              240,
+              160
+            ]
+          ],
+          "negative": [
+            [
+              410,
+              210
+            ]
+          ]
+        }
+      ]
+    },
+    "test_frames_used": 0,
+    "point_quality_minimum": {
+      "background": 0.6,
+      "grille": 0.45,
+      "rim": 0.55
+    },
+    "material_mapping": "paint/oxide/glass/rubber/plastic/mineral -> nonmetal; exposed metallic part hypotheses -> metal"
+  }
+}
