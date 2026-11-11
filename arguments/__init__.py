@@ -85,6 +85,8 @@ class PipelineParams(ParamGroup):
 class OptimizationParams(ParamGroup):
     def __init__(self, parser, sentinel=False):
         self.iterations = 30000
+        self.roadblock_c = False
+        self.save_complete_20k = False
         # IR training uses progressive DropGaussian from the first iteration.
         self.ir_dropgaussian_max_rate = 0.2
         self.ir_dropgaussian_seed = 0

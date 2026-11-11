@@ -1,7 +1,6 @@
 """Shared DN response, frozen display mapping and view sampling for attribute Probe.
 
-Extracted unchanged from the former independent raw-DN experiment. No fitting
-entry point lives here; production attribute fitting is in tools/.
+Production attribute fitting is in tools/.
 """
 import argparse
 import ast
@@ -40,7 +39,11 @@ def read_config(model, device):
             raise ValueError('Expanded cfg_args unsupported')
         v = item.value
         if isinstance(v, ast.Call):
-            if ast.unparse(v.func) not in ('device', 'torch.device'):
+            constructor = v.func
+            is_device = isinstance(constructor, ast.Name) and constructor.id == 'device'
+            is_torch_device = (isinstance(constructor, ast.Attribute) and constructor.attr == 'device'
+                               and isinstance(constructor.value, ast.Name) and constructor.value.id == 'torch')
+            if not (is_device or is_torch_device):
                 raise ValueError('Unsupported constructor in cfg_args')
             values[item.arg] = torch.device(*[ast.literal_eval(a) for a in v.args],
                                            **{k.arg: ast.literal_eval(k.value) for k in v.keywords})

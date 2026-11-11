@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""CLI scene launcher: own DN adapter, unchanged main training, complete 20k state."""
+"""Launch RGBT training with a scene-specific DN adapter and complete 20k state."""
 import argparse
-import ast
 import csv
 import json
 import os
@@ -14,8 +13,7 @@ import time
 
 ROOT=Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:sys.path.insert(0,str(ROOT))
-from tools.full_training_state import (BOUNDARY,write_json,file_sha,transform_training,
-    save_complete_checkpoint)
+from tools.full_training_state import BOUNDARY, write_json, file_sha
 
 
 def resolve(value):
@@ -28,8 +26,12 @@ def scene_path(value):
     return direct if direct.is_dir() else resolve('data/RGBT-Scenes/'+value)
 
 
+def format_command(command):
+    return " ".join(shlex.quote(str(argument)) for argument in command)
+
+
 def checked_run(command,env=None):
-    print('[COMMAND] '+shlex.join([str(x) for x in command]),flush=True)
+    print('[COMMAND] '+format_command(command),flush=True)
     subprocess.run([str(x) for x in command],cwd=ROOT,env=env,check=True)
 
 
@@ -174,15 +176,12 @@ def training_command(args,source,config,output,mapping):
         '--phys_aux_start_iter','20000','--phys_aux_ramp_iters','5000','--phys_aux_mse_max_weight','0.05',
         '--phys_probe_every','1000','--phys_decouple_steps','128',
         '--ir_late_consistency_weight','0.2','--late_lr_schedule','cosine',
-        '--late_lr_start_iter','20000','--late_lr_end_iter','30000','--late_lr_final_factor','1.0']
+        '--late_lr_start_iter','20000','--late_lr_end_iter','30000','--late_lr_final_factor','1.0',
+        '--save_complete_20k']
+    if args.profile == 'roadblock_c':
+        command.append('--roadblock_c')
     if args.material_manifest:command+=['--phys_material_manifest',str(resolve(args.material_manifest))]
     return command
-
-
-class CheckpointController:
-    def before_loop(self,L):return None
-    def after_step(self,iteration,L):
-        if iteration==BOUNDARY:save_complete_checkpoint(L,iteration)
 
 
 def train_worker(plan_path):
@@ -191,14 +190,10 @@ def train_worker(plan_path):
     torch.set_num_threads(plan['threads']);torch.set_num_interop_threads(1)
     if torch.cuda.device_count()!=1:raise RuntimeError('Expected one selected CUDA device')
     check_hashes(plan['input_hashes']);check_hashes(plan['source_hashes'])
-    source=(ROOT/'train.py').read_text();tree,inventory=transform_training(source)
-    write_json(Path(plan['output'])/'main_loop_state_inventory.json',dict(carried_locals=inventory,
-        hook='after ordinary optimizer steps; at 20000 only',loss_and_optimizers_unchanged=True))
+    import runpy
+
     sys.argv=plan['train_command'][2:]
-    namespace=dict(__name__='__main__',__file__=str(ROOT/'train.py'),__shared=CheckpointController())
-    # The AST only adds the audited checkpoint callback. No experiment optimizer
-    # adapter, alternative loss, Probe scheduling or source-file edits are used.
-    exec(compile(tree,str(ROOT/'train.py'),'exec'),namespace)
+    runpy.run_path(sys.argv[0], run_name='__main__')
     output=Path(plan['output'])
     audit=json.loads((output/'complete_state_20000.json').read_text())
     if audit['status']!='passed' or not audit['live_state_unchanged']:
@@ -206,8 +201,18 @@ def train_worker(plan_path):
     cache=torch.load(output/'point_cloud'/('iteration_%d'%plan['iterations'])/'radiometric_probe.pt',map_location='cpu')
     if not all(cache.get(k) for k in ('main_loss_feedback','IR_SH_feedback_verified','slope_learnable')):
         raise RuntimeError('Final learnable-slope Probe/main feedback was not verified')
+    if plan['profile'] == 'roadblock_c':
+        options = cache['options']
+        phase = json.loads((output/'phys_probe/feedback/phase_audit.json').read_text())
+        if (not cache.get('attribute_data_main_gradient_leak_check')
+                or options.get('experiment_prior_normalization', {}).get('status') != 'passed'
+                or options.get('experiment_initialization_controls', {}).get('metal_start') != .25
+                or not phase['phase1_frozen_T_environment_direction_verified']
+                or not phase['endpoint_commits'] or not phase['outer_Adam_updates']):
+            raise RuntimeError('RoadBlock C final Probe stages or endpoint updates were not verified')
     write_json(output/'main_training_complete.json',dict(status='complete',iterations=plan['iterations'],
-        complete_20k_checkpoint=audit['checkpoint'],main_feedback_verified=True,slope_learnable=True))
+        profile=plan['profile'], complete_20k_checkpoint=audit['checkpoint'],
+        main_feedback_verified=True,slope_learnable=True))
 
 
 def main():
@@ -219,12 +224,14 @@ def main():
     parser.add_argument('--gpu',type=int,default=0)
     parser.add_argument('--threads',type=int,default=4)
     parser.add_argument('--iterations',type=int,default=30000)
+    parser.add_argument('--profile', choices=('auto', 'roadblock_c', 'baseline'), default='auto',
+                        help='Auto uses C for RoadBlock and the existing profile for other scenes')
     parser.add_argument('--mapping',help='Reuse an already fitted adapter for THIS scene; otherwise fit first')
     parser.add_argument('--mapping-steps',type=int,default=800)
     parser.add_argument('--png-byte-order',choices=['swap','native'],default='swap')
     parser.add_argument('--check-only',action='store_true',help='Full read-only data/mask/metadata checks; no fitting/training')
     parser.add_argument('--dry-run',action='store_true',help='Print commands after lightweight path/config checks only')
-    parser.add_argument('--self-check',action='store_true',help='CPU complete-state codec and AST tests; no optimizer updates')
+    parser.add_argument('--self-check',action='store_true',help='CPU complete-state codec check; no optimizer updates')
     parser.add_argument('--check-report',help='Optional JSON destination for read-only checks')
     parser.add_argument('--_worker-plan',help=argparse.SUPPRESS)
     args=parser.parse_args()
@@ -235,6 +242,10 @@ def main():
     if not args.scene or not args.material_config:parser.error('--scene and --material-config are required')
     if args.threads<1 or args.iterations<=BOUNDARY or args.mapping_steps<1:parser.error('Invalid threads/iterations/mapping budget')
     source=scene_path(args.scene);config=resolve(args.material_config)
+    if args.profile == 'auto':
+        args.profile = 'roadblock_c' if source.name.lower() == 'roadblock' else 'baseline'
+    if args.profile == 'roadblock_c' and args.iterations != 30000:
+        parser.error('RoadBlock C requires --iterations 30000')
     if not source.is_dir() or not config.is_file():raise FileNotFoundError('Scene or material config does not exist')
     from utils.material_config import load_material_config
     load_material_config(config)
@@ -248,8 +259,8 @@ def main():
     train_command=training_command(args,source,config,output,mapping)
     if args.dry_run:
         print('[DRY RUN] no output/data checks/fitting/training started')
-        if not args.mapping:print('[MAPPING] '+shlex.join(fit_command))
-        print('[TRAIN] '+shlex.join(train_command));print('[CHECKPOINT] '+str(output/'complete_state_20000.pt'));return
+        if not args.mapping:print('[MAPPING] '+format_command(fit_command))
+        print('[TRAIN] '+format_command(train_command));print('[CHECKPOINT] '+str(output/'complete_state_20000.pt'));return
     audit=audit_scene(source,config,str(resolve(args.material_manifest)) if args.material_manifest else '',args.png_byte_order,args.threads)
     print('[INPUTS VERIFIED] scene={} train={} test={} material_pixels={} native_raw={}'.format(
         source.name,len(audit['train']),len(audit['test']),audit['mask_pixel_counts'],audit['raw_shape']),flush=True)
@@ -283,7 +294,7 @@ def main():
         input_hashes=selected_inputs,source_hashes=source_hashes,train_command=train_command,
         mapping=str(mapping),mapping_fit_frames=mapping_doc['fit_frames'],mapping_validation_frames=mapping_doc['validation_frames'],
         full_checkpoint_schema='physir_complete_training_boundary_v2',checkpoint_iteration=BOUNDARY,
-        profile='unchanged production full-SH + learnable slope + true-IR-GT feedback; no VarPro/normalized-prior experiment')
+        profile=args.profile)
     plan_path=output/'main_launch.json';write_json(plan_path,plan)
     env=os.environ.copy();env.update(CUDA_DEVICE_ORDER='PCI_BUS_ID',CUDA_VISIBLE_DEVICES=str(gpu['cuda_ordinal']),
         OMP_NUM_THREADS=str(args.threads),MKL_NUM_THREADS=str(args.threads),OPENBLAS_NUM_THREADS=str(args.threads),

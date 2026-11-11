@@ -2,11 +2,29 @@
 
 Research modifications of PhysIR-Splat; upstream history, license and notices are retained.
 
-Current source is restored from the verified B_clean_verify baseline, plus region-shared learnable epsilon(T) and the original detached-confidence MSE against observed IR GT. B reconstruction losses, SH0-3, geometry, DropGaussian and LR settings are retained. Temperature/emissivity estimates remain prior-conditioned.
+The RGBT scene launcher uses the C profile for RoadBlock. It keeps
+SH degrees 0–3, IR DropGaussian, and adds a clean IR smoothness loss
+with weight 0.3 throughout training. After the 20,000th update it saves the
+complete training state, then initializes the PriorNorm Probe. The bounded
+regional emissivity and slope are regressed every 128 steps on the fit
+views. Temperature, environment and directional reflection join the
+optimization at step 22,501. Probe feedback weights the MSE against the
+observed IR GT. Temperature and emissivity estimates are prior-conditioned.
 
-Run training with train.py and render with render.py. Full commands, stages, gradient checks and rollback backup are documented in [the current attribute pipeline](docs/attribute_probe_pipeline.md). The field optimizer starts after 20k; the GT auxiliary ramps to 0.05, and k is released at 27,501 for a 30k run. No physical prediction image replaces the GT target.
+Run from the repository root after placing the RGBT dataset and its offline
+SAM3 masks. The launcher fits the scene-specific DN display mapping or reuses
+one supplied with `--mapping`.
 
-SAM3 remains offline; masks and the frozen DN display mapping are retained. The graduate project is explicitly preserved.
+```shell
+python -u tools/train_rgbt_scene.py -s RoadBlock --gpu 0 \
+  --material-config data/materials/sam3_materials.json
+```
+
+Use `--check-only` to verify the dataset and SAM3 mask inputs before
+starting. For Truck and other scenes, the launcher selects the existing
+full-SH feedback profile. `--profile baseline` selects that profile for
+RoadBlock as well. See the [attribute pipeline](docs/attribute_probe_pipeline.md)
+for earlier baseline commands and rendering details.
 
 ---
 

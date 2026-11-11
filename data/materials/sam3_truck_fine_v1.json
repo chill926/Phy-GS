@@ -1,0 +1,497 @@
+{
+  "schema": "sam3_fine_material_config_v1",
+  "scene": "Truck",
+  "checkpoint": "/home/liupengyu/sam3/checkpoints/sam3.pt",
+  "split": "train",
+  "output_directory": "material_masks/sam3_fine_v1",
+  "mask_threshold": 0.5,
+  "evidence_threshold": 0.15,
+  "instance_threshold": 0.23,
+  "conflict_margin": 0.05,
+  "max_crops": 3,
+  "labels": {
+    "unknown": {
+      "id": 0,
+      "zh": "未辨明/无有效观测",
+      "color": [
+        60,
+        60,
+        60
+      ],
+      "coarse": 0
+    },
+    "painted_metal": {
+      "id": 1,
+      "zh": "喷漆金属表面",
+      "color": [
+        230,
+        65,
+        65
+      ],
+      "coarse": 1
+    },
+    "bare_metal": {
+      "id": 2,
+      "zh": "裸露/亮面金属",
+      "color": [
+        70,
+        150,
+        245
+      ],
+      "coarse": 2
+    },
+    "weathered_metal": {
+      "id": 3,
+      "zh": "锈蚀/氧化金属表面",
+      "color": [
+        170,
+        95,
+        45
+      ],
+      "coarse": 1
+    },
+    "metal_finish_uncertain": {
+      "id": 4,
+      "zh": "工业金属结构、表层未明确（低置信高发射率组）",
+      "color": [
+        145,
+        140,
+        110
+      ],
+      "coarse": 1
+    },
+    "glass": {
+      "id": 5,
+      "zh": "车窗/玻璃",
+      "color": [
+        45,
+        220,
+        225
+      ],
+      "coarse": 1
+    },
+    "rubber": {
+      "id": 6,
+      "zh": "轮胎/橡胶",
+      "color": [
+        145,
+        75,
+        215
+      ],
+      "coarse": 1
+    },
+    "plastic": {
+      "id": 7,
+      "zh": "塑料/聚合物饰件",
+      "color": [
+        245,
+        140,
+        195
+      ],
+      "coarse": 1
+    },
+    "lamp_lens": {
+      "id": 8,
+      "zh": "灯具透明罩、具体材料待确认",
+      "color": [
+        255,
+        230,
+        65
+      ],
+      "coarse": 1
+    },
+    "concrete": {
+      "id": 9,
+      "zh": "混凝土/水泥",
+      "color": [
+        165,
+        185,
+        195
+      ],
+      "coarse": 1
+    },
+    "masonry": {
+      "id": 10,
+      "zh": "砖石/砌体",
+      "color": [
+        200,
+        145,
+        100
+      ],
+      "coarse": 1
+    },
+    "mineral_aggregate": {
+      "id": 11,
+      "zh": "矿物料堆/砂石/炉料",
+      "color": [
+        220,
+        190,
+        110
+      ],
+      "coarse": 1
+    },
+    "soil": {
+      "id": 12,
+      "zh": "泥土/泥地",
+      "color": [
+        110,
+        80,
+        50
+      ],
+      "coarse": 1
+    },
+    "vegetation": {
+      "id": 13,
+      "zh": "植物",
+      "color": [
+        65,
+        170,
+        75
+      ],
+      "coarse": 1
+    },
+    "wood": {
+      "id": 14,
+      "zh": "木材/木托盘",
+      "color": [
+        165,
+        120,
+        75
+      ],
+      "coarse": 1
+    },
+    "fabric": {
+      "id": 15,
+      "zh": "织物/篷布",
+      "color": [
+        175,
+        70,
+        140
+      ],
+      "coarse": 1
+    },
+    "skin": {
+      "id": 16,
+      "zh": "可见皮肤",
+      "color": [
+        250,
+        180,
+        150
+      ],
+      "coarse": 1
+    },
+    "sky": {
+      "id": 17,
+      "zh": "天空/远处空域（不初始化实体）",
+      "color": [
+        135,
+        205,
+        255
+      ],
+      "coarse": 0
+    }
+  },
+  "groups": [
+    {
+      "name": "industrial_background",
+      "label": "metal_finish_uncertain",
+      "priority": 6,
+      "prompts": [
+        "factory ceiling",
+        "metal roof",
+        "metal wall",
+        "steel beam",
+        "industrial equipment"
+      ],
+      "views": [
+        "full"
+      ],
+      "instance_threshold": 0.4,
+      "confidence_cap": 0.35
+    },
+    {
+      "name": "mineral_piles",
+      "label": "mineral_aggregate",
+      "priority": 10,
+      "prompts": [
+        "sand pile",
+        "pile of gravel",
+        "pile of industrial material",
+        "gravel ground"
+      ],
+      "views": [
+        "full"
+      ]
+    },
+    {
+      "name": "soil_ground",
+      "label": "soil",
+      "priority": 10,
+      "prompts": [
+        "dirt ground",
+        "muddy ground"
+      ],
+      "views": [
+        "full"
+      ]
+    },
+    {
+      "name": "concrete",
+      "label": "concrete",
+      "priority": 12,
+      "prompts": [
+        "concrete floor",
+        "concrete wall",
+        "concrete pillar"
+      ],
+      "views": [
+        "full"
+      ]
+    },
+    {
+      "name": "brick_masonry",
+      "label": "masonry",
+      "priority": 14,
+      "prompts": [
+        "brick wall"
+      ],
+      "views": [
+        "full"
+      ]
+    },
+    {
+      "name": "steel_structure",
+      "label": "metal_finish_uncertain",
+      "priority": 18,
+      "prompts": [
+        "steel structure",
+        "metal railing",
+        "metal pipe",
+        "industrial furnace",
+        "industrial hopper",
+        "metal platform"
+      ],
+      "views": [
+        "full"
+      ],
+      "confidence_cap": 0.55
+    },
+    {
+      "name": "truck_parent",
+      "label": "painted_metal",
+      "priority": 19,
+      "prompts": [
+        "truck"
+      ],
+      "views": [
+        "full"
+      ],
+      "confidence_cap": 0.4,
+      "parent_fallback": true
+    },
+    {
+      "name": "painted_panels",
+      "label": "painted_metal",
+      "priority": 25,
+      "prompts": [
+        "red truck body",
+        "truck cab",
+        "truck cargo bed",
+        "painted metal surface",
+        "green painted metal"
+      ],
+      "views": [
+        "full"
+      ],
+      "anchor": "cab"
+    },
+    {
+      "name": "oxidized_surfaces",
+      "label": "weathered_metal",
+      "priority": 27,
+      "prompts": [
+        "rusty metal",
+        "rusted steel surface"
+      ],
+      "views": [
+        "full"
+      ],
+      "instance_threshold": 0.4
+    },
+    {
+      "name": "bare_metal",
+      "label": "bare_metal",
+      "priority": 32,
+      "prompts": [
+        "truck fuel tank",
+        "metal truck step",
+        "chrome truck grille"
+      ],
+      "views": [
+        "full",
+        "crop"
+      ],
+      "instance_threshold": 0.32,
+      "max_fraction": 0.2
+    },
+    {
+      "name": "bare_fasteners",
+      "label": "bare_metal",
+      "priority": 46,
+      "prompts": [
+        "metal bolt",
+        "metal screw",
+        "metal hinge"
+      ],
+      "views": [
+        "full"
+      ],
+      "instance_threshold": 0.42,
+      "max_fraction": 0.015
+    },
+    {
+      "name": "tires",
+      "label": "rubber",
+      "priority": 38,
+      "prompts": [
+        "rubber tire",
+        "truck tire",
+        "rubber mud flap"
+      ],
+      "views": [
+        "full",
+        "crop"
+      ],
+      "anchor": "wheel",
+      "max_fraction": 0.35
+    },
+    {
+      "name": "rims",
+      "label": "bare_metal",
+      "priority": 44,
+      "prompts": [
+        "wheel rim",
+        "truck wheel rim",
+        "wheel hub"
+      ],
+      "views": [
+        "full",
+        "crop"
+      ],
+      "max_fraction": 0.12,
+      "instance_threshold": 0.28
+    },
+    {
+      "name": "plastic_trim",
+      "label": "plastic",
+      "priority": 42,
+      "prompts": [
+        "black plastic trim",
+        "plastic mirror housing",
+        "plastic grille",
+        "plastic cover",
+        "plastic bucket"
+      ],
+      "views": [
+        "full",
+        "crop"
+      ],
+      "max_fraction": 0.3
+    },
+    {
+      "name": "wood",
+      "label": "wood",
+      "priority": 36,
+      "prompts": [
+        "wooden pallet",
+        "wooden board"
+      ],
+      "views": [
+        "full"
+      ],
+      "max_fraction": 0.35
+    },
+    {
+      "name": "cloth",
+      "label": "fabric",
+      "priority": 43,
+      "prompts": [
+        "tarpaulin",
+        "fabric clothing"
+      ],
+      "views": [
+        "full"
+      ],
+      "max_fraction": 0.2
+    },
+    {
+      "name": "human_skin",
+      "label": "skin",
+      "priority": 44,
+      "prompts": [
+        "human skin"
+      ],
+      "views": [
+        "full"
+      ],
+      "max_fraction": 0.07
+    },
+    {
+      "name": "lamps",
+      "label": "lamp_lens",
+      "priority": 48,
+      "prompts": [
+        "truck headlight",
+        "truck indicator light",
+        "truck tail light"
+      ],
+      "views": [
+        "full",
+        "crop"
+      ],
+      "max_fraction": 0.12
+    },
+    {
+      "name": "windows",
+      "label": "glass",
+      "priority": 55,
+      "prompts": [
+        "truck windshield",
+        "truck side window",
+        "glass window",
+        "side mirror glass"
+      ],
+      "views": [
+        "full",
+        "crop"
+      ],
+      "max_fraction": 0.35
+    },
+    {
+      "name": "plants",
+      "label": "vegetation",
+      "priority": 35,
+      "prompts": [
+        "plant",
+        "grass"
+      ],
+      "views": [
+        "full"
+      ],
+      "max_fraction": 0.35
+    },
+    {
+      "name": "sky",
+      "label": "sky",
+      "priority": 16,
+      "prompts": [
+        "sky"
+      ],
+      "views": [
+        "full"
+      ],
+      "max_fraction": 0.7
+    }
+  ],
+  "coarse_mapping_policy": "surface: paint/oxide/polymer/glass/mineral=nonmetal; clearly exposed metallic accessories=metal; unclear industrial finish=low-confidence nonmetal; unobserved/sky=unknown"
+}

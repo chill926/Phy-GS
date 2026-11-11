@@ -1,0 +1,91 @@
+{
+  "schema_version": 2,
+  "labels": {
+    "unknown": 0,
+    "nonmetal": 1,
+    "metal": 2,
+    "treated_metal": 3
+  },
+  "base_config": "sam3_truck_materials_prompted_v2.json",
+  "base_config_sha256": "190e68724ed71bb4d13c3aa75dc10a002519391f2ead3ab4f568a54dc508093e",
+  "emissivity": {
+    "metal": {
+      "initial": 0.3,
+      "min": 0.2,
+      "max": 0.4
+    },
+    "nonmetal": "inherit_probe",
+    "unknown": "inherit_probe",
+    "treated_metal": {
+      "initial": 0.8,
+      "min": 0.2,
+      "max": 0.99
+    }
+  },
+  "sam3": {
+    "mask_directory": "material_masks/sam3_four_fast_v1",
+    "checkpoint": "/home/liupengyu/sam3/checkpoints/sam3.pt",
+    "mask_probability_threshold": 0.5,
+    "instance_threshold": 0.32,
+    "pixel_threshold": 0.2,
+    "groups": [
+      {
+        "name": "nonmetal",
+        "priority": 30,
+        "prompts": [
+          "concrete floor",
+          "concrete wall",
+          "dirt ground",
+          "pile of gravel",
+          "truck windshield",
+          "truck side window",
+          "rubber tire",
+          "truck headlight",
+          "wooden board"
+        ]
+      },
+      {
+        "name": "treated_metal",
+        "priority": 25,
+        "prompts": [
+          "painted metal surface",
+          "red truck body",
+          "rusty metal",
+          "visible oxidized vessel",
+          "coated vessel behind cab"
+        ]
+      },
+      {
+        "name": "metal",
+        "priority": 40,
+        "prompts": [
+          "truck fuel tank",
+          "metal truck step",
+          "metal bolt",
+          "chrome truck grille",
+          "wheel rim",
+          "wheel hub"
+        ]
+      }
+    ]
+  },
+  "fusion": {
+    "max_views": 12,
+    "min_views": 2,
+    "min_known_fraction": 0.2,
+    "min_class_agreement": 0.75,
+    "min_accumulation": 0.15,
+    "relative_depth_jump": 0.03,
+    "min_region_pixels": 12,
+    "neighbors": 8,
+    "neighbor_distance_factor": 3.0,
+    "min_same_region_views": 2,
+    "max_region_conflict_fraction": 0.2
+  },
+  "optimization": {
+    "emissivity_start_fraction": 0.25,
+    "slope_start_fraction": 0.5,
+    "emissivity_lr_scale": 0.25
+  },
+  "proposal_overrides": {}
+}

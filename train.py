@@ -573,6 +573,13 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, device):
     configure_full_sh_probe(opt)
     from utils.attribute_feedback import enabled as attribute_feedback_enabled, validate as validate_attribute_feedback
     validate_attribute_feedback(dataset, opt)
+    if opt.roadblock_c:
+        from utils.roadblock_c import validate_profile
+        validate_profile(dataset, opt)
+    if opt.save_complete_20k and (
+            opt.iterations <= 20000 or opt.phys_aux_start_iter != 20000
+            or not attribute_feedback_enabled(opt) or getattr(dataset, "load_iteration", 0)):
+        raise ValueError("The complete 20k checkpoint requires fresh training and deferred 20k Probe feedback")
     if opt.phys_probe_mode == ATTRIBUTE_MODE:
         from utils.attribute_probe_pipeline import validate_attribute_inputs
         validate_attribute_inputs(dataset, opt)
@@ -585,6 +592,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, device):
 
 
 def _training_loop(dataset, opt, pipe, testing_iterations, saving_iterations, device):
+    from tools.full_training_state import BOUNDARY, save_complete_checkpoint
+    from utils import roadblock_c
+
     ir_geometry_mode = getattr(opt, "ir_geometry_mode", "learned")
     if ir_geometry_mode not in ("learned", "static"):
         raise ValueError("ir_geometry_mode must be learned or static")
@@ -1430,6 +1440,12 @@ def _training_loop(dataset, opt, pipe, testing_iterations, saving_iterations, de
             loss = loss + live_feedback.loss(iteration, viewpoint_cam, gaussians, scene,
                 geo_model, pipe, background, image, gt_image,
                 (d_xyz_full, d_rotation_full, d_scaling_full))
+        if opt.roadblock_c:
+            # The clean render contributes gradients to the loss only.
+            clean_ir = render(viewpoint_cam, gaussians, pipe, background,
+                              d_xyz_full, d_rotation_full, d_scaling_full, device,
+                              dataset.is_6dof, feature_set="thermal", opacity_compensation=None)["render"]
+            loss = loss + roadblock_c.SMOOTHNESS_WEIGHT * roadblock_c.clean_ir_smoothness(clean_ir)
         loss.backward()
 
         iter_end.record()
@@ -1897,6 +1913,14 @@ def _training_loop(dataset, opt, pipe, testing_iterations, saving_iterations, de
                 planck_model.update_learning_rate(iteration)
                 radiometric_model.update_learning_rate(iteration)
 
+            if iteration == BOUNDARY:
+                if opt.save_complete_20k or opt.roadblock_c:
+                    save_complete_checkpoint(locals(), iteration)
+                if opt.roadblock_c:
+                    roadblock_c.prepare_probe(locals(), time_interval)
+            if opt.roadblock_c and iteration in roadblock_c.FIELD_LOG_STEPS:
+                roadblock_c.log_fields(live_feedback, iteration)
+
     if live_feedback is not None:
         live_feedback.close()
     print("Best PSNR = {} in Iteration {}".format(best_psnr, best_iteration))
@@ -2152,6 +2176,13 @@ if __name__ == "__main__":
 
     # Initialize system state (RNG)
     safe_state(args.quiet, device)
+    if args.roadblock_c:
+        import random
+        import numpy as np
+
+        random.seed(args.ir_dropgaussian_seed)
+        np.random.seed(args.ir_dropgaussian_seed)
+        torch.manual_seed(args.ir_dropgaussian_seed)
 
     # Start GUI server, configure and run training
     torch.autograd.set_detect_anomaly(args.detect_anomaly)

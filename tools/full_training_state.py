@@ -2,7 +2,6 @@
 
 Extracted from the verified complete-state codec; no training entry point.
 """
-import ast
 import gc
 import hashlib
 import json
@@ -100,7 +99,7 @@ def callable_descriptor(value):
             'module':getattr(value,'__module__',None),'name':getattr(value,'__qualname__',getattr(value,'__name__',None))}
     code=getattr(value,'__code__',None)
     if code is not None:
-        result['code_sha256']=hashlib.sha256(marshal.dumps(code)).hexdigest()
+        result['code_sha256']=hashlib.sha256(marshal.dumps(code, 2)).hexdigest()
         result['constant_state_sha256']=digest((getattr(value,'__defaults__',None),getattr(value,'__kwdefaults__',None),
             tuple(c.cell_contents for c in (getattr(value,'__closure__',None) or ()))))
     return result
@@ -220,12 +219,12 @@ def digest(value, *, portable=False):
     h=hashlib.sha256();seen={}
     def visit(x):
         if callable(x) and not isinstance(x,torch.nn.Module):
-            if id(x) in seen:h.update(('ref:'+str(seen[id(x)])).encode());return
-            seen[id(x)]=len(seen)
+            if id(x) in seen:h.update(('ref:'+str(seen[id(x)][0])).encode());return
+            seen[id(x)]=(len(seen),x)
             import marshal
             h.update(repr((type(x).__name__,getattr(x,'__module__',None),getattr(x,'__qualname__',None))).encode())
             code=getattr(x,'__code__',None)
-            if code is not None:h.update(marshal.dumps(code))
+            if code is not None:h.update(marshal.dumps(code, 2))
             visit(getattr(x,'__defaults__',None));visit(getattr(x,'__kwdefaults__',None))
             visit(tuple(c.cell_contents for c in (getattr(x,'__closure__',None) or ())))
             bound=getattr(x,'__self__',None)
@@ -238,8 +237,8 @@ def digest(value, *, portable=False):
             h.update(repr(('ndarray',str(x.dtype),x.shape)).encode());h.update(x.tobytes());return
         if isinstance(x,(str,int,float,bool,type(None),bytes,torch.device)):
             h.update(repr((type(x).__name__,x)).encode());return
-        if id(x) in seen:h.update(('ref:'+str(seen[id(x)])).encode());return
-        seen[id(x)]=len(seen)
+        if id(x) in seen:h.update(('ref:'+str(seen[id(x)][0])).encode());return
+        seen[id(x)]=(len(seen),x)
         if isinstance(x,dict):
             h.update(('dict:'+str(len(x))).encode())
             for key in sorted(x,key=lambda k:(type(k).__name__,str(k))):visit(key);visit(x[key])
@@ -281,47 +280,6 @@ WRAPPERS=('gaussians','geo_model','rgb_geo_model','atmos_model','planck_model','
 SCALARS=('background','best_iteration','best_psnr','densify_initial_points','ema_loss_for_log',
          'fixed_time_interval','has_rgbt','late_l1_weight','prev_probe_point_count','start_iteration',
          'testing_iterations','saving_iterations')
-
-
-CARRIED=set(WRAPPERS)|set(SCALARS)|{'dataset','device','ir_dropgaussian','iter_end','iter_start',
-    'live_feedback','log_learning_rates','model_path','opt','path_atmosphere','pipe','progress_bar',
-    'run_atmosphere_probe','run_material_probe','save_training_state','scene','smooth_term',
-    'start_time','tb_writer','temporal_affine_model','temporal_pose_model','viewpoint_stack'}
-
-
-def transform_training(source):
-    tree=ast.parse(source);f=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='_training_loop')
-    loops=[n for n in f.body if isinstance(n,ast.For) and isinstance(n.target,ast.Name) and n.target.id=='iteration']
-    if len(loops)!=1:raise RuntimeError('Training iteration loop changed')
-    loop=loops[0];index=f.body.index(loop)
-    class Names(ast.NodeVisitor):
-        def __init__(self):self.store=set();self.load=set()
-        def visit_Name(self,n):(self.store if isinstance(n.ctx,ast.Store) else self.load).add(n.id)
-        def visit_FunctionDef(self,n):self.store.add(n.name)
-        def visit_Lambda(self,n):pass
-        def visit_ListComp(self,n):pass
-        def visit_DictComp(self,n):pass
-    before=Names();inside=Names()
-    for node in f.body[:index]:before.visit(node)
-    inside.visit(loop)
-    carried=(before.store|{n.arg for n in f.args.args})&inside.load
-    if carried!=(CARRIED-{'prev_probe_point_count'}):raise RuntimeError('Unclassified loop state: '+str(sorted(carried^(CARRIED-{'prev_probe_point_count'}))))
-    end_with=loop.body[-1]
-    if not isinstance(end_with,ast.With):raise RuntimeError('Training update boundary moved')
-    call_names=[n.func.attr for n in ast.walk(end_with) if isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute)]
-    if call_names.count('step')!=8 or not any(isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute)
-            and n.func.attr=='update_learning_rate' and isinstance(n.func.value,ast.Name)
-            and n.func.value.id=='radiometric_model' for n in ast.walk(end_with)):
-        raise RuntimeError('Optimizer sequence changed; review the checkpoint boundary')
-    assignments=['__shared_begin = 1','__shared_values = __shared.before_loop(locals())',
-                 'if __shared_values is not None:','    __shared_begin = 20001']
-    for key in SCALARS+('viewpoint_stack','start_time'):
-        assignments.append('    '+key+' = __shared_values['+repr(key)+']')
-    f.body[index:index]=ast.parse('\n'.join(assignments)).body
-    loop.iter=ast.parse('range(__shared_begin, opt.iterations + 1)',mode='eval').body
-    end_with.body.extend(ast.parse('__shared.after_step(iteration, locals())').body)
-    ast.fix_missing_locations(tree)
-    return tree,sorted(carried)
 
 
 def capture_state(L, iteration):
@@ -469,13 +427,11 @@ def self_check(report_path):
         assert parts==semantic_parts(loaded)
         assert restored['live_feedback'].problem is None and restored['live_feedback'].optimizer is None
         assert float(restored['gaussians'].optimizer.state[restored['gaussians'].weight]['step'])==20000
-        tree,inventory=transform_training((Path(__file__).resolve().parents[1]/'train.py').read_text())
-        compile(tree,'train.py[checkpoint_hook]','exec')
         report=dict(status='passed',actual_training_steps=0,actual_optimizer_updates=0,
             nonzero_Adam_moments_and_step_restored=True,deferred_Probe_exactly_preserved=True,
             scene_camera_stack_and_model_modes_restored=True,RNG_unchanged_by_export=True,
-            full_boundary_export_and_CPU_load_verified=True,training_AST_inventory_verified=True,
-            state_parts=parts,carried_locals=inventory,fixture=str(output))
+            full_boundary_export_and_CPU_load_verified=True,
+            state_parts=parts,fixture=str(output))
         write_json(report_path,report);print('[STATE SELF CHECK PASSED] '+str(report_path),flush=True)
         return report
     finally:

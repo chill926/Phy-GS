@@ -1,5 +1,8 @@
 # B_clean_verify基线：可学习发射率斜率与GT反馈
 
+> This document describes the B-clean baseline. The current RoadBlock C
+> training command is in the [project README](../README.md).
+
 2026-11-02按用户要求恢复 `RoadBlock_B_clean_verify_20261101_171935` 对应源码，再增加可学习epsilon(T)和原Probe形式的加权GT MSE反馈。恢复时46份源码全部匹配历史清理清单中的SHA256；当前仅修改5份原源码，新增 `utils/attribute_feedback.py`，其余41份源码仍逐字匹配B_clean_verify。
 
 回退前全部源码和文档已备份到 `output/code_backups/before_restore_B_clean_feedback_20261102_232152/`。本次未修改graduate、数据集、SAM3掩膜、已完成训练输出或B_clean_verify的原缓存。
